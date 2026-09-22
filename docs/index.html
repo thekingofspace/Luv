@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>luv docs</title>
+  <meta name="description" content="Documentation for luv, a Luau game engine for Windows and Linux.">
+  <meta name="theme-color" content="#182343">
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+  <link rel="stylesheet" href="assets/style.css">
+  <script>try { const theme = localStorage.getItem("luv-theme"); if (theme) { document.documentElement.dataset.theme = theme; } } catch (error) {}</script>
+</head>
+<body data-repo="thekingofspace/Luv" data-branch="main" data-home="about/introduction">
+  <header class="topbar">
+    <button class="menu-button" type="button" aria-label="Open the menu"><span></span><span></span><span></span></button>
+    <a class="topbar-brand" href="./">
+      <img src="assets/icon.svg" alt="">
+      <svg viewBox="0 0 100 60" aria-label="luv" role="img"><g fill="none" stroke="currentColor" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6V44Q8 53 17 53"/><path d="M31 24V41A12 12 0 0 0 55 41V24M55 24V53"/><path d="M69 24L81 53L93 24"/></g></svg>
+    </a>
+    <button class="search-button" type="button" aria-label="Search docs">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+    </button>
+  </header>
+  <aside class="sidebar">
+    <div class="brand">
+      <a class="brand-link" href="./">
+        <img class="brand-icon" src="assets/icon.svg" alt="">
+        <svg class="brand-word" viewBox="0 0 100 60" aria-label="luv" role="img"><g fill="none" stroke="currentColor" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6V44Q8 53 17 53"/><path d="M31 24V41A12 12 0 0 0 55 41V24M55 24V53"/><path d="M69 24L81 53L93 24"/></g></svg>
+      </a>
+      <div class="brand-meta">
+        <span class="version">latest</span>
+        <button class="theme-button" type="button" aria-label="Switch between light and dark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+        </button>
+      </div>
+      <form class="search" role="search">
+        <input type="search" name="q" placeholder="Search docs" aria-label="Search docs" autocomplete="off">
+      </form>
+    </div>
+    <nav class="toc" aria-label="Documentation"></nav>
+  </aside>
+  <div class="overlay"></div>
+  <main class="main">
+    <div class="layout">
+      <div class="page">
+        <div class="crumbs"></div>
+        <article class="content"><p class="loading">Loading...</p></article>
+        <nav class="pager" aria-label="Pages"></nav>
+        <footer class="footer"></footer>
+      </div>
+      <aside class="rail" aria-label="On this page">
+        <div class="rail-inner">
+          <p class="rail-title">On this page</p>
+          <ul class="rail-list"></ul>
+          <div class="rail-links"></div>
+        </div>
+      </aside>
+    </div>
+  </main>
+  <script src="assets/app.js"></script>
+</body>
+</html>

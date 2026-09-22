@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="heart" x1="18" y1="16" x2="112" y2="112" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ff7aa2"/>
+      <stop offset="0.55" stop-color="#ff4f7e"/>
+      <stop offset="1" stop-color="#8a5cf6"/>
+    </linearGradient>
+    <linearGradient id="spark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffe3ec"/>
+      <stop offset="1" stop-color="#ffb3c9"/>
+    </linearGradient>
+  </defs>
+  <g transform="rotate(-10 64 66)">
+    <path d="M64 112C30 90 12 70 12 48C12 31 25 19 41 19C51 19 59 25 64 33C69 25 77 19 87 19C103 19 116 31 116 48C116 70 98 90 64 112Z" fill="url(#heart)"/>
+    <path d="M30 40C31 33 36 29 43 28" fill="none" stroke="#ffffff" stroke-opacity="0.55" stroke-width="7" stroke-linecap="round"/>
+  </g>
+  <rect x="94" y="4" width="22" height="22" rx="5" transform="rotate(-10 105 15)" fill="url(#spark)"/>
+</svg>

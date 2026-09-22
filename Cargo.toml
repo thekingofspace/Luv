@@ -1,0 +1,55 @@
+[package]
+name = "luv"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "luv"
+path = "src/lib.rs"
+
+[[bin]]
+name = "luv"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+argon2 = "0.6.0"
+ash = { version = "0.38.0", default-features = false, features = ["std"] }
+aws-lc-rs = "1.18.1"
+base64 = "0.23.1"
+blake3 = "1.8.7"
+bytemuck = { version = "1.25.2", features = ["derive"] }
+cc = "1.4.7"
+clap = { version = "4.6.7", features = ["derive"] }
+cpal = "0.18.2"
+crossbeam-channel = "0.5.17"
+dirs = "7.0.0"
+editpe = "0.2.4"
+full_moon = { version = "2.2.0", features = ["luau"] }
+futures-core = "0.3"
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
+gilrs = "0.11.2"
+image = { version = "0.25.10", default-features = false, features = ["bmp", "dds", "exr", "ff", "gif", "hdr", "ico", "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp"] }
+libffi = "5.2.0"
+libloading = "0.9.0"
+md-5 = "0.11.0"
+mlua = { version = "0.12.1", features = ["luau", "async", "error-send"] }
+opus-decoder = "0.1.1"
+reqwest = "0.13.5"
+resvg = "0.48.1"
+rtrb = "0.4.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+swash = "0.2.10"
+symphonia = { version = "0.6.1", features = ["all", "opt-simd"] }
+tokio = { version = "1.53.1", features = ["full"] }
+tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
+toml = "1.1.6"
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "wgsl", "glsl", "spirv", "naga-ir"] }
+winit = "0.30.13"
+zstd = "0.14.0"
+
+[dev-dependencies]
+opus-pure = "0.2.1"
+tempfile = "3.27.0"

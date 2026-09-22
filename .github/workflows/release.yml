@@ -1,0 +1,133 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prepare:
+    name: Check changelog and version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Require changelog.md
+        run: |
+          changelog=$(find . -maxdepth 1 -type f -iname changelog.md -print -quit)
+          if [ -z "$changelog" ]; then
+            echo "::error::There is no changelog.md in the repository root, so nothing was released. Add one containing the release notes and run this workflow again."
+            exit 1
+          fi
+          if [ -z "$(tr -d '[:space:]' < "$changelog")" ]; then
+            echo "::error::$changelog is empty. Write the release notes in it and run this workflow again."
+            exit 1
+          fi
+
+      - name: Read package version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "luv") | .version')
+          if [ -z "$version" ] || [ "$version" = "null" ]; then
+            echo "::error::Could not read the luv package version from Cargo.toml."
+            exit 1
+          fi
+          tag="v$version"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "::error::Release $tag already exists. Raise the version in Cargo.toml and run this workflow again."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: linux-x86_64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    env:
+      ARCHIVE: luv-${{ needs.prepare.outputs.version }}-${{ matrix.name }}.zip
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Linux build libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config autoconf automake libtool libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --bin luv --target ${{ matrix.target }}
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path "target/${{ matrix.target }}/release/luv.exe" -DestinationPath "dist/$env:ARCHIVE"
+
+      - name: Package Linux
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p dist
+          strip "target/${{ matrix.target }}/release/luv"
+          zip -9 -j "dist/$ARCHIVE" "target/${{ matrix.target }}/release/luv"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.name }}
+          path: dist/${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  release:
+    name: Publish ${{ needs.prepare.outputs.tag }}
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          changelog=$(find . -maxdepth 1 -type f -iname changelog.md -print -quit)
+          gh release create "$TAG" dist/*.zip --target "$GITHUB_SHA" --title "luv $TAG" --notes-file "$changelog" --latest

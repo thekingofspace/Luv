@@ -1,0 +1,10 @@
+[game]
+name = "{{name}}"
+version = "0.1.0"
+authors = []
+description = ""
+icon = "assets/icon.png"
+main = "src/main.luau"
+
+[build]
+output = "build"
