@@ -110,6 +110,7 @@ pub struct Object {
     pub blend: Blend,
     pub sink: bool,
     pub shaders: Vec<Loaded>,
+    pub shader_ids: Arc<[ShaderId]>,
     pub slots: BTreeMap<(u32, u32), Slot>,
     pub vertex_count: u32,
     pub instance_count: u32,
@@ -145,6 +146,7 @@ impl Object {
             blend: Blend::Alpha,
             sink: true,
             shaders: Vec::new(),
+            shader_ids: Arc::from([]),
             slots: BTreeMap::new(),
             vertex_count: 6,
             instance_count: 1,
@@ -259,6 +261,10 @@ impl Object {
         Some(self.transform().collider(id, shape))
     }
 
+    pub fn sync_shader_ids(&mut self) {
+        self.shader_ids = self.shaders.iter().map(|loaded| loaded.id).collect();
+    }
+
     pub fn snapshot(&mut self, id: ObjectId) -> Snapshot {
         let body = match self.kind {
             Kind::Renderable => Body::Custom {
@@ -325,7 +331,7 @@ impl Object {
             order: self.order,
             z_index: self.z_index,
             blend: self.blend,
-            shaders: self.shaders.iter().map(|loaded| loaded.id).collect(),
+            shaders: self.shader_ids.clone(),
             body,
             hook,
         }

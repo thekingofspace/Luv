@@ -144,7 +144,7 @@ pub struct Snapshot {
     pub order: u64,
     pub z_index: f64,
     pub blend: Blend,
-    pub shaders: Vec<ShaderId>,
+    pub shaders: Arc<[ShaderId]>,
     pub body: Body,
     pub hook: Option<NativeHook>,
 }

@@ -35,8 +35,26 @@ use crate::window::{WindowEvent, WindowId};
 pub const THREAD_STACK_SIZE: usize = 16 * 1024 * 1024;
 pub const HEARTBEAT_RATE: f64 = 60.0;
 
+#[cfg(windows)]
+fn raise_timer_resolution() {
+    #[link(name = "winmm")]
+    unsafe extern "system" {
+        fn timeBeginPeriod(period: u32) -> u32;
+    }
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| unsafe {
+        timeBeginPeriod(1);
+    });
+}
+
+#[cfg(not(windows))]
+fn raise_timer_resolution() {}
+
 pub fn compiler() -> Compiler {
-    Compiler::new().set_optimization_level(2).set_debug_level(1)
+    Compiler::new()
+        .set_optimization_level(2)
+        .set_debug_level(1)
+        .set_type_info_level(1)
 }
 
 pub fn load_unit(lua: &Lua, vfs: &dyn Vfs, path: &str, unit: usize) -> Result<Function> {
@@ -112,6 +130,7 @@ impl Runtime {
     }
 
     fn create(engine: Arc<Engine>, label: Option<String>) -> Result<Self> {
+        raise_timer_resolution();
         let lua = Lua::new();
 
         let reporter = {

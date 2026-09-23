@@ -314,6 +314,7 @@ impl GameObject for Callback {
     fn on_destroy(&mut self) {
         if let Some(stub) = self.stub.take() {
             stub.shared.alive.store(false, Ordering::Release);
+            self.retired.borrow_mut().push(stub);
         }
     }
 }

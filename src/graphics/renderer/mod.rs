@@ -65,6 +65,8 @@ struct FrameUniform {
     padding: [f32; 2],
 }
 
+pub type Map<K, V> = HashMap<K, V, rustc_hash::FxBuildHasher>;
+
 pub struct RendererHandle {
     commands: Arc<Sender<RenderCommand>>,
 }
@@ -283,6 +285,7 @@ struct Backdrop {
 
 struct PostTargets {
     targets: [(wgpu::Texture, wgpu::TextureView); 2],
+    groups: [Option<wgpu::BindGroup>; 2],
     size: [u32; 2],
     format: wgpu::TextureFormat,
 }
@@ -308,11 +311,11 @@ struct Graphics {
     nearest: wgpu::Sampler,
     comparison: wgpu::Sampler,
     white: GpuTexture,
-    textures: HashMap<TextureId, GpuTexture>,
+    textures: Map<TextureId, GpuTexture>,
     atlas: Atlas,
     backdrop: Option<Backdrop>,
     post: Option<PostTargets>,
-    groups: HashMap<TextureSlot, wgpu::BindGroup>,
+    groups: Map<TextureSlot, wgpu::BindGroup>,
     pipelines: Pipelines,
     query: Option<QueryState>,
     texture_generation: u64,
@@ -416,11 +419,11 @@ impl Graphics {
             nearest,
             comparison,
             white,
-            textures: HashMap::new(),
+            textures: Map::default(),
             atlas,
             backdrop: None,
             post: None,
-            groups: HashMap::new(),
+            groups: Map::default(),
             pipelines,
             query: None,
             texture_generation: 0,
@@ -520,14 +523,21 @@ impl Graphics {
         let targets = [create(), create()];
         self.post = Some(PostTargets {
             targets: targets.clone(),
+            groups: [None, None],
             size,
             format,
         });
         targets
     }
 
-    fn post_group(&self, input: &wgpu::TextureView) -> wgpu::BindGroup {
-        self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+    fn post_group(&mut self, index: usize) -> Option<wgpu::BindGroup> {
+        if let Some(post) = &self.post
+            && let Some(group) = &post.groups[index]
+        {
+            return Some(group.clone());
+        }
+        let input = &self.post.as_ref()?.targets[index].1.clone();
+        let group = self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("post process"),
             layout: &self.engine,
             entries: &[
@@ -556,7 +566,11 @@ impl Graphics {
                     resource: wgpu::BindingResource::TextureView(input),
                 },
             ],
-        })
+        });
+        if let Some(post) = &mut self.post {
+            post.groups[index] = Some(group.clone());
+        }
+        Some(group)
     }
 
     fn group(&mut self, slot: TextureSlot) -> wgpu::BindGroup {
@@ -636,7 +650,7 @@ struct Prepared {
 struct Bound {
     key: CustomKey,
     version: (u64, u64, u64),
-    buffers: HashMap<(u32, u32), wgpu::Buffer>,
+    buffers: Map<(u32, u32), wgpu::Buffer>,
     groups: Vec<(u32, wgpu::BindGroup)>,
 }
 
@@ -650,8 +664,8 @@ struct Tracked {
     snapshot: Snapshot,
     slot: u32,
     range: Range<u32>,
-    data: HashMap<(u32, u32), SlotContent>,
-    native: HashMap<(u32, u32), NativeTexture>,
+    data: Map<(u32, u32), SlotContent>,
+    native: Map<(u32, u32), NativeTexture>,
     references: bool,
     data_version: u64,
     bound: Option<Bound>,
@@ -769,14 +783,15 @@ unsafe extern "C" fn hook_set_draw_counts(context: *mut RenderContext, vertices:
 
 #[derive(Default)]
 struct Scene {
-    objects: HashMap<ObjectId, Tracked>,
+    objects: Map<ObjectId, Tracked>,
     table: Vec<GpuObject>,
     free: Vec<u32>,
-    table_dirty: bool,
+    table_dirty: Option<Range<usize>>,
     slot_generation: u64,
-    fonts: HashMap<FontId, Font>,
-    shaders: HashMap<ShaderId, Arc<ShaderLayout>>,
+    fonts: Map<FontId, Font>,
+    shaders: Map<ShaderId, Arc<ShaderLayout>>,
     structure: bool,
+    hooked: usize,
     patched: Vec<ObjectId>,
     instances: Vec<Instance>,
     dirty: Option<Range<usize>>,
@@ -827,6 +842,9 @@ fn structural(old: &Snapshot, new: &Snapshot) -> bool {
             },
         ) => {
             !Arc::ptr_eq(content, other)
+                && (content.font != other.font
+                    || content.glyphs.len() != other.glyphs.len()
+                    || content.decorations.len() != other.decorations.len())
                 || (*stroke > 0.0) != (*other_stroke > 0.0)
                 || (background[3] > 0.0) != (other_background[3] > 0.0)
         }
@@ -888,7 +906,15 @@ impl Scene {
             *entry = GpuObject::EMPTY;
         }
         self.free.push(slot);
-        self.table_dirty = true;
+        self.touch_table(slot);
+    }
+
+    fn touch_table(&mut self, slot: u32) {
+        let slot = slot as usize;
+        self.table_dirty = Some(match self.table_dirty.take() {
+            Some(range) => range.start.min(slot)..range.end.max(slot + 1),
+            None => slot..slot + 1,
+        });
     }
 
     fn apply(&mut self, delta: SceneDelta, mut graphics: Option<&mut Graphics>) -> Vec<String> {
@@ -922,6 +948,7 @@ impl Scene {
         }
         for id in delta.removals {
             if let Some(tracked) = self.objects.remove(&id) {
+                self.hooked -= usize::from(tracked.snapshot.hook.is_some());
                 self.release(tracked.slot);
                 self.structure = true;
             }
@@ -936,19 +963,22 @@ impl Scene {
                     } else {
                         self.patched.push(id);
                     }
+                    self.hooked -= usize::from(tracked.snapshot.hook.is_some());
+                    self.hooked += usize::from(snapshot.hook.is_some());
                     tracked.snapshot = snapshot;
                     tracked.slot
                 }
                 None => {
                     let slot = self.allocate();
+                    self.hooked += usize::from(snapshot.hook.is_some());
                     self.objects.insert(
                         id,
                         Tracked {
                             snapshot,
                             slot,
                             range: 0..0,
-                            data: HashMap::new(),
-                            native: HashMap::new(),
+                            data: Map::default(),
+                            native: Map::default(),
                             references: false,
                             data_version: 0,
                             bound: None,
@@ -959,7 +989,7 @@ impl Scene {
                 }
             };
             self.table[slot as usize] = entry;
-            self.table_dirty = true;
+            self.touch_table(slot);
         }
         for write in delta.slots {
             if let Some(tracked) = self.objects.get_mut(&write.object) {
@@ -1247,6 +1277,9 @@ impl Scene {
         let instance_bytes = (self.instances.len().max(1) * size_of::<Instance>()) as u64;
         if graphics.instances.ensure(&device, instance_bytes) {
             graphics.groups.clear();
+            if let Some(post) = &mut graphics.post {
+                post.groups = [None, None];
+            }
             self.dirty = Some(0..self.instances.len());
         }
         if let Some(range) = self.dirty.take()
@@ -1261,22 +1294,28 @@ impl Scene {
         let table_bytes = (self.table.len().max(1) * size_of::<GpuObject>()) as u64;
         if graphics.objects.ensure(&device, table_bytes) {
             graphics.groups.clear();
-            self.table_dirty = true;
+            if let Some(post) = &mut graphics.post {
+                post.groups = [None, None];
+            }
+            self.table_dirty = Some(0..self.table.len());
         }
-        if self.table_dirty && !self.table.is_empty() {
-            graphics
-                .gpu
-                .queue
-                .write_buffer(&graphics.objects.buffer, 0, bytemuck::cast_slice(&self.table));
+        if let Some(range) = self.table_dirty.take()
+            && range.end <= self.table.len()
+            && !range.is_empty()
+        {
+            graphics.gpu.queue.write_buffer(
+                &graphics.objects.buffer,
+                (range.start * size_of::<GpuObject>()) as u64,
+                bytemuck::cast_slice(&self.table[range]),
+            );
         }
-        self.table_dirty = false;
     }
 
     fn custom_key(&self, snapshot: &Snapshot, format: wgpu::TextureFormat) -> Result<Option<CustomKey>, String> {
         let custom = matches!(snapshot.body, Body::Custom { .. });
         let mut vertex = None;
         let mut fragment = None;
-        for id in &snapshot.shaders {
+        for id in snapshot.shaders.iter() {
             let Some(layout) = self.shaders.get(id) else {
                 continue;
             };
@@ -1317,7 +1356,7 @@ impl Scene {
     fn post_key(&self, snapshot: &Snapshot, format: wgpu::TextureFormat) -> Result<Option<CustomKey>, String> {
         let mut vertex = None;
         let mut fragment = None;
-        for id in &snapshot.shaders {
+        for id in snapshot.shaders.iter() {
             let Some(layout) = self.shaders.get(id) else {
                 continue;
             };
@@ -1352,7 +1391,8 @@ impl Scene {
     fn resolve_post(&mut self, graphics: &mut Graphics, format: wgpu::TextureFormat, errors: &mut Vec<String>) -> Vec<Prepared> {
         let device = graphics.gpu.device.clone();
         let mut passes = Vec::new();
-        for id in self.post.clone() {
+        for index in 0..self.post.len() {
+            let id = self.post[index];
             let Some(tracked) = self.objects.get(&id) else {
                 continue;
             };
@@ -1394,27 +1434,37 @@ impl Scene {
     }
 
     fn bind(&mut self, graphics: &Graphics, id: ObjectId, key: &CustomKey, custom: &Custom) -> Vec<(u32, wgpu::BindGroup)> {
-        let slots: HashMap<ObjectId, u32> = match self.objects.get(&id) {
-            Some(tracked) if tracked.references => {
-                self.objects.iter().map(|(id, tracked)| (*id, tracked.slot)).collect()
-            }
-            _ => HashMap::new(),
-        };
         let slot_generation = self.slot_generation;
+        let references = {
+            let Some(tracked) = self.objects.get(&id) else {
+                return Vec::new();
+            };
+            let version = (
+                tracked.data_version,
+                graphics.texture_generation,
+                if tracked.references { slot_generation } else { 0 },
+            );
+            if let Some(bound) = &tracked.bound
+                && bound.key == *key
+                && bound.version == version
+            {
+                return bound.groups.clone();
+            }
+            tracked.references
+        };
+        let slots: Map<ObjectId, u32> = if references {
+            self.objects.iter().map(|(id, tracked)| (*id, tracked.slot)).collect()
+        } else {
+            Map::default()
+        };
         let Some(tracked) = self.objects.get_mut(&id) else {
             return Vec::new();
         };
         let version = (
             tracked.data_version,
             graphics.texture_generation,
-            if tracked.references { slot_generation } else { 0 },
+            if references { slot_generation } else { 0 },
         );
-        if let Some(bound) = &tracked.bound
-            && bound.key == *key
-            && bound.version == version
-        {
-            return bound.groups.clone();
-        }
 
         let device = &graphics.gpu.device;
         let mut buffers = tracked.bound.take().map(|bound| bound.buffers).unwrap_or_default();
@@ -1609,7 +1659,7 @@ impl Scene {
             .get(&id)
             .ok_or_else(|| (hook::INVALID, "a RenderHook ran for a renderable that no longer exists".to_owned()))?;
         let mut reason = None;
-        for shader in &tracked.snapshot.shaders {
+        for shader in tracked.snapshot.shaders.iter() {
             let Some(layout) = self.shaders.get(shader) else {
                 continue;
             };
@@ -1752,6 +1802,9 @@ impl Scene {
     }
 
     fn run_hooks(&mut self, graphics: &mut Graphics, view: &View, frame: &FrameInfo, errors: &mut Vec<String>) {
+        if self.hooked == 0 {
+            return;
+        }
         let mut hooks: Vec<(f64, u64, ObjectId, NativeHook, [f32; 7])> = self
             .objects
             .values()
@@ -2017,13 +2070,14 @@ impl Renderer {
         }
         if let Some(targets) = &targets {
             for (index, pass) in passes.iter().enumerate() {
-                let input = &targets[index % 2].1;
+                let Some(group) = graphics.post_group(index % 2) else {
+                    continue;
+                };
                 let output = if index + 1 == passes.len() {
                     &final_view.view
                 } else {
                     &targets[(index + 1) % 2].1
                 };
-                let group = graphics.post_group(input);
                 let mut render_pass = begin_pass(&mut encoder, output, wgpu::LoadOp::Clear(wgpu::Color::BLACK));
                 render_pass.set_pipeline(&pass.pipeline);
                 render_pass.set_bind_group(0, &group, &[]);

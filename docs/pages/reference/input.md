@@ -17,7 +17,7 @@ Keys only reach the window that has focus:
 
 Keys are named by their place on a US keyboard. The name does not change with the keyboard layout. For the text that a key types, use [TextInput](#textinput). Keys that luv does not know come in as `enum.KeyCode.Unknown`.
 
-After the window closes, the properties and methods error with `this input API belongs to a window that is closed`.
+After the window closes, the properties and methods error with `this input API belongs to a window that is closed`. The signals are destroyed, so their handlers are dropped.
 
 See [Input](../manual/input.md) for a guide.
 

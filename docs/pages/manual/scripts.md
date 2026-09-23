@@ -161,6 +161,31 @@ print(answer)
 - The same aliases work in [FS](../reference/fs.md) paths.
 - A loaded container adds an alias like `@Expansion`. See [Containers and DLC](containers.md).
 
+## Aliases luv writes for you
+
+Every container gets an alias, so your editor can follow `require("@Expansion")`. luv keeps them up to date each time you run `luv test`, `luv build` or `luv package`. Run [luv luaurc](../start/command-line.md#luv-luaurc) to update the file on its own without building.
+
+- With no `.luaurc` in the project root, luv makes one.
+- With a `.luaurc` already there, luv adds its aliases to the ones you wrote.
+- The alias name is the container file name without `.cont`, and it points at the container main script.
+
+luv also writes the list of aliases it added to `build/aliases.json`:
+
+```json title="build/aliases.json"
+{
+    "aliases": {
+        "Expansion": "./expansion/src/expansion"
+    }
+}
+```
+
+That list is how luv knows which entries are its own. When you delete a container, the next build removes only that alias and leaves everything else in your `.luaurc` alone.
+
+- Change the value of an alias yourself and luv stops touching it.
+- Rewriting the file drops any comments it had. luv only rewrites it when an alias really changes.
+- A project with a `.config.luau` and no `.luaurc` is left alone, so the two files cannot fight. luv prints a note.
+- Set `aliases = false` in the `[build]` table of [build.toml](../start/build-toml.md) to turn this off.
+
 ## Module caching
 
 Each module runs only once. Every later `require` of the same file returns the same value, even when you write the path in another way.

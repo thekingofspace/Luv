@@ -50,6 +50,7 @@ The whole `[build]` table is optional.
 | Field | Type | Default | What it does |
 | --- | --- | --- | --- |
 | `output` | string | `"build"` | The folder that `luv test`, `luv build` and `luv package` write into. It is relative to the project root. |
+| `aliases` | boolean | `true` | Whether luv keeps the container aliases in `.luaurc` up to date. See [Scripts and modules](../manual/scripts.md#aliases-luv-writes-for-you). |
 
 ## Rules
 

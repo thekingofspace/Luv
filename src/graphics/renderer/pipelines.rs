@@ -1,5 +1,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
+
+use super::Map;
 use std::sync::Arc;
 
 use crate::graphics::{POST_SHADER, QUAD_SHADER};
@@ -83,7 +85,7 @@ pub fn blend_state(blend: Blend, premultiplied: bool) -> Option<wgpu::BlendState
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Stage {
     pub shader: ShaderId,
-    pub entry: String,
+    pub entry: Arc<str>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -120,8 +122,8 @@ pub struct Pipelines {
     builtin_module: wgpu::ShaderModule,
     post_module: wgpu::ShaderModule,
     builtin_layout: wgpu::PipelineLayout,
-    builtin: HashMap<(Blend, wgpu::TextureFormat), wgpu::RenderPipeline>,
-    modules: HashMap<ShaderId, wgpu::ShaderModule>,
+    builtin: Map<(Blend, wgpu::TextureFormat), wgpu::RenderPipeline>,
+    modules: Map<ShaderId, wgpu::ShaderModule>,
     custom: HashMap<CustomKey, Result<Arc<Custom>, String>>,
 }
 
@@ -251,8 +253,8 @@ impl Pipelines {
             builtin_module,
             post_module,
             builtin_layout,
-            builtin: HashMap::new(),
-            modules: HashMap::new(),
+            builtin: Map::default(),
+            modules: Map::default(),
             custom: HashMap::new(),
         }
     }
@@ -295,7 +297,7 @@ impl Pipelines {
         device: &wgpu::Device,
         engine: &wgpu::BindGroupLayout,
         key: &CustomKey,
-        shaders: &HashMap<ShaderId, Arc<ShaderLayout>>,
+        shaders: &Map<ShaderId, Arc<ShaderLayout>>,
     ) -> Result<Arc<Custom>, String> {
         if let Some(result) = self.custom.get(key) {
             return result.clone();
@@ -310,7 +312,7 @@ impl Pipelines {
         device: &wgpu::Device,
         engine: &wgpu::BindGroupLayout,
         key: &CustomKey,
-        shaders: &HashMap<ShaderId, Arc<ShaderLayout>>,
+        shaders: &Map<ShaderId, Arc<ShaderLayout>>,
     ) -> Result<Custom, String> {
         let lookup = |stage: &Option<Stage>| -> Result<Option<Arc<ShaderLayout>>, String> {
             match stage {
@@ -337,8 +339,8 @@ impl Pipelines {
         let vertex_entry = key
             .vertex
             .as_ref()
-            .map_or(if key.post { "vs_post" } else { "vs_main" }, |stage| stage.entry.as_str());
-        let fragment_entry = key.fragment.as_ref().map_or("fs_main", |stage| stage.entry.as_str());
+            .map_or(if key.post { "vs_post" } else { "vs_main" }, |stage| &*stage.entry);
+        let fragment_entry = key.fragment.as_ref().map_or("fs_main", |stage| &*stage.entry);
 
         let mut groups: BTreeMap<u32, BTreeMap<u32, (BindingKind, String)>> = BTreeMap::new();
         for layout in [&vertex_layout, &fragment_layout].into_iter().flatten() {

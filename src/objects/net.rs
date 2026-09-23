@@ -68,7 +68,7 @@ impl Link {
     }
 
     fn close(&self) {
-        if self.open.get() {
+        if self.open.replace(false) {
             self.stop.notify_one();
         }
     }

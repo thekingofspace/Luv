@@ -48,7 +48,7 @@ pub fn instance() -> &'static wgpu::Instance {
 
 pub fn warm_up() {
     let _ = thread::Builder::new().name("gpu warm up".to_owned()).spawn(|| {
-        instance();
+        let _ = Gpu::get();
     });
 }
 

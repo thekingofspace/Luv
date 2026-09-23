@@ -201,6 +201,14 @@ impl Renderable {
         self.write(property, kinds, |object, _, _| action(object))
     }
 
+    fn update_changed(&self, property: &str, kinds: &[Kind], action: impl FnOnce(&mut Object) -> Result<bool>) -> Result<()> {
+        self.member(property, kinds)?;
+        let scene = self.scene()?;
+        scene
+            .write_changed(self.id, |object, _, _| action(object))
+            .unwrap_or_else(|| Err(self.gone()))
+    }
+
     fn set_image(&self, value: AnyUserData) -> Result<()> {
         let (data, name) = asset_data(&value, "Image")?;
         let (width, height) = picture::dimensions(&data, Some(&name))
@@ -271,12 +279,14 @@ impl Renderable {
         })
     }
 
-    fn set_text(&self, property: &str, action: impl FnOnce(&mut TextState) -> Result<()>) -> Result<()> {
-        self.update(property, TEXT, |object| {
+    fn set_text(&self, property: &str, action: impl FnOnce(&mut TextState) -> Result<bool>) -> Result<()> {
+        self.update_changed(property, TEXT, |object| {
             let text = object.text.as_mut().ok_or_else(|| runtime("the text has no font yet"))?;
-            action(text)?;
+            if !action(text)? {
+                return Ok(false);
+            }
             text.cache = None;
-            Ok(())
+            Ok(true)
         })
     }
 
@@ -302,6 +312,7 @@ impl Renderable {
                 id,
                 layout,
             });
+            object.sync_shader_ids();
             Ok(())
         })
     }
@@ -319,6 +330,9 @@ impl Renderable {
                 keep
             });
             removed = object.shaders.len() != before;
+            if removed {
+                object.sync_shader_ids();
+            }
             for id in released {
                 resources.release_shader(id);
             }
@@ -640,9 +654,12 @@ impl UserData for Renderable {
         fields.add_field_method_get("ZIndex", |_, this| this.read("ZIndex", ALL, |object| Ok(object.z_index)));
         fields.add_field_method_set("ZIndex", |_, this, value: f64| {
             let value = finite("ZIndex", value)?;
-            this.update("ZIndex", ALL, |object| {
+            this.update_changed("ZIndex", ALL, |object| {
+                if object.z_index == value {
+                    return Ok(false);
+                }
                 object.z_index = value;
-                Ok(())
+                Ok(true)
             })
         });
         fields.add_field_method_get("BlendMode", |lua, this| {
@@ -720,18 +737,24 @@ impl UserData for Renderable {
         fields.add_field_method_get("Position", |_, this| this.read("Position", PLACED, |object| Ok(object.position)));
         fields.add_field_method_set("Position", |_, this, value: UDim| {
             let value = finite_udim("Position", value)?;
-            this.update("Position", PLACED, |object| {
+            this.update_changed("Position", PLACED, |object| {
+                if object.position == value {
+                    return Ok(false);
+                }
                 object.position = value;
-                Ok(())
+                Ok(true)
             })
         });
         fields.add_field_method_get("Size", |_, this| this.read("Size", PLACED, |object| Ok(object.size)));
         fields.add_field_method_set("Size", |_, this, value: UDim| {
             let value = finite_udim("Size", value)?;
-            this.update("Size", PLACED, |object| {
+            this.update_changed("Size", PLACED, |object| {
+                if object.size == value {
+                    return Ok(false);
+                }
                 object.size = value;
                 object.invalidate_text();
-                Ok(())
+                Ok(true)
             })
         });
         fields.add_field_method_get("AnchorPoint", |_, this| {
@@ -739,24 +762,33 @@ impl UserData for Renderable {
         });
         fields.add_field_method_set("AnchorPoint", |_, this, value: UDim| {
             let value = finite_udim("AnchorPoint", value)?;
-            this.update("AnchorPoint", PLACED, |object| {
+            this.update_changed("AnchorPoint", PLACED, |object| {
+                if object.anchor == value {
+                    return Ok(false);
+                }
                 object.anchor = value;
-                Ok(())
+                Ok(true)
             })
         });
         fields.add_field_method_get("Rotation", |_, this| this.read("Rotation", PLACED, |object| Ok(object.rotation)));
         fields.add_field_method_set("Rotation", |_, this, value: f64| {
             let value = finite("Rotation", value)?;
-            this.update("Rotation", PLACED, |object| {
+            this.update_changed("Rotation", PLACED, |object| {
+                if object.rotation == value {
+                    return Ok(false);
+                }
                 object.rotation = value;
-                Ok(())
+                Ok(true)
             })
         });
         fields.add_field_method_get("Color", |_, this| this.read("Color", PLACED, |object| Ok(object.color)));
         fields.add_field_method_set("Color", |_, this, value: Color| {
-            this.update("Color", PLACED, |object| {
+            this.update_changed("Color", PLACED, |object| {
+                if object.color == value {
+                    return Ok(false);
+                }
                 object.color = value;
-                Ok(())
+                Ok(true)
             })
         });
 
@@ -775,9 +807,12 @@ impl UserData for Renderable {
             this.read("StrokeColor", STROKED, |object| Ok(object.stroke_color))
         });
         fields.add_field_method_set("StrokeColor", |_, this, value: Color| {
-            this.update("StrokeColor", STROKED, |object| {
+            this.update_changed("StrokeColor", STROKED, |object| {
+                if object.stroke_color == value {
+                    return Ok(false);
+                }
                 object.stroke_color = value;
-                Ok(())
+                Ok(true)
             })
         });
         fields.add_field_method_get("StrokeThickness", |_, this| {
@@ -785,9 +820,12 @@ impl UserData for Renderable {
         });
         fields.add_field_method_set("StrokeThickness", |_, this, value: f64| {
             let value = at_least_zero("StrokeThickness", value)?;
-            this.update("StrokeThickness", STROKED, |object| {
+            this.update_changed("StrokeThickness", STROKED, |object| {
+                if object.stroke == value {
+                    return Ok(false);
+                }
                 object.stroke = value;
-                Ok(())
+                Ok(true)
             })
         });
 
@@ -853,8 +891,9 @@ impl UserData for Renderable {
         fields.add_field_method_get("Text", |_, this| this.text("Text", |text| text.text.clone()));
         fields.add_field_method_set("Text", |_, this, value: String| {
             this.set_text("Text", |text| {
+                let changed = text.text != value;
                 text.text = value;
-                Ok(())
+                Ok(changed)
             })
         });
         fields.add_field_method_get("TextSize", |_, this| this.text("TextSize", |text| text.size));
@@ -863,8 +902,9 @@ impl UserData for Renderable {
                 return Err(runtime("TextSize must be a number greater than 0"));
             }
             this.set_text("TextSize", |text| {
+                let changed = text.size != value;
                 text.size = value;
-                Ok(())
+                Ok(changed)
             })
         });
         for (property, get, set) in [
@@ -877,8 +917,9 @@ impl UserData for Renderable {
             fields.add_field_method_get(property, move |_, this| this.text(property, get));
             fields.add_field_method_set(property, move |_, this, value: bool| {
                 this.set_text(property, |text| {
+                    let changed = get(text) != value;
                     set(text, value);
-                    Ok(())
+                    Ok(changed)
                 })
             });
         }
@@ -892,12 +933,13 @@ impl UserData for Renderable {
             fields.add_field_method_set(property, move |_, this, item: EnumItem| {
                 let value = align(item, enum_type)?;
                 this.set_text(property, |text| {
+                    let changed = value != if enum_type == TEXT_X_ALIGNMENT { text.x_align } else { text.y_align };
                     if enum_type == TEXT_X_ALIGNMENT {
                         text.x_align = value;
                     } else {
                         text.y_align = value;
                     }
-                    Ok(())
+                    Ok(changed)
                 })
             });
         }
@@ -905,27 +947,33 @@ impl UserData for Renderable {
         fields.add_field_method_set("LineHeight", |_, this, value: f64| {
             let value = at_least_zero("LineHeight", value)?;
             this.set_text("LineHeight", |text| {
+                let changed = text.line_height != value;
                 text.line_height = value;
-                Ok(())
+                Ok(changed)
             })
         });
         fields.add_field_method_get("LetterSpacing", |_, this| this.text("LetterSpacing", |text| text.letter_spacing));
         fields.add_field_method_set("LetterSpacing", |_, this, value: f64| {
             let value = finite("LetterSpacing", value)?;
             this.set_text("LetterSpacing", |text| {
+                let changed = text.letter_spacing != value;
                 text.letter_spacing = value;
-                Ok(())
+                Ok(changed)
             })
         });
         fields.add_field_method_get("BackgroundColor", |_, this| {
             this.text("BackgroundColor", |text| text.background)
         });
         fields.add_field_method_set("BackgroundColor", |_, this, value: Color| {
-            this.update("BackgroundColor", TEXT, |object| {
-                if let Some(text) = &mut object.text {
-                    text.background = value;
+            this.update_changed("BackgroundColor", TEXT, |object| {
+                let Some(text) = &mut object.text else {
+                    return Ok(false);
+                };
+                if text.background == value {
+                    return Ok(false);
                 }
-                Ok(())
+                text.background = value;
+                Ok(true)
             })
         });
         fields.add_field_method_get("TextBounds", |_, this| {

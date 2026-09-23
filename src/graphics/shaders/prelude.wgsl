@@ -163,6 +163,10 @@ fn shape_distance(shape: u32, size: vec2<f32>, point: vec2<f32>) -> f32 {
         let k1 = length(point / (radii * radii));
         return k0 * (k0 - 1.0) / max(k1, 1e-6);
     }
+    if shape == SHAPE_RECTANGLE {
+        let gap = abs(point) - abs(size) * 0.5;
+        return length(max(gap, vec2<f32>(0.0))) + min(max(gap.x, gap.y), 0.0);
+    }
     let range = shape_range(shape);
     if shape == NO_SHAPE || range.y == 0u {
         return 1e30;

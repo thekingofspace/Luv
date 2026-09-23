@@ -102,6 +102,7 @@ end
 - [Container.LoadLibrary](../reference/container.md#loadlibrary) adds the files of the container to the game. It does not run any script. It yields while it reads the file.
 - [GetRequire](../reference/containerlibrary.md#getrequire) returns `"@Expansion"`. Requiring that path runs the main script and returns its value. Like any module, the main script runs only once.
 - `require("@Expansion")` also works once the container is loaded.
+- luv writes that alias into your `.luaurc` when it builds, so your editor can follow it too. See [Aliases luv writes for you](scripts.md#aliases-luv-writes-for-you).
 - A loaded container stays loaded until the game ends.
 
 Names are not case sensitive. You can use the file name without `.cont` or the name from `container.toml`.

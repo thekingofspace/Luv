@@ -21,7 +21,7 @@ Focus rules:
 
 `Icon`, `Visible` and `LockMode` only change the cursor of this window.
 
-After the window closes, the properties and methods error with `this input API belongs to a window that is closed`.
+After the window closes, the properties and methods error with `this input API belongs to a window that is closed`. The signals are destroyed, so their handlers are dropped.
 
 See [Input](../manual/input.md) for a guide.
 

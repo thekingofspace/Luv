@@ -436,12 +436,14 @@ impl Window {
             let mut last = Instant::now();
             let mut next = last;
             while state.open.get() {
-                next += Duration::from_secs_f64(1.0 / state.fps.get());
+                let period = Duration::from_secs_f64(1.0 / state.fps.get());
+                next += period;
                 let now = Instant::now();
                 if next < now {
                     next = now;
                 }
-                tokio::time::sleep_until(next).await;
+                let slack = period.min(Duration::from_millis(1)) / 2;
+                tokio::time::sleep_until(next - slack).await;
                 if !state.open.get() {
                     break;
                 }
@@ -583,14 +585,20 @@ impl Window {
     }
 
     pub fn close(lua: &Lua, window: &AnyUserData) -> Result<()> {
-        let (closed, tracker) = {
+        let (closed, tracker, signals) = {
             let this = window.borrow::<Window>()?;
             if !this.shut() {
                 return Ok(());
             }
-            (this.signals.closed.clone(), this.tracker.clone())
+            let signals = this.signals.all().map(AnyUserData::clone);
+            (this.signals.closed.clone(), this.tracker.clone(), signals)
         };
         let fired = fire(lua, &closed, MultiValue::new());
+        for signal in signals {
+            if let Ok(mut signal) = signal.borrow_mut::<Signal>() {
+                signal.destroy();
+            }
+        }
         tracker.exit();
         fired
     }
@@ -620,7 +628,7 @@ impl GameObject for Window {
     }
 
     fn on_destroy(&mut self) {
-        self.inputs.destroy();
+        self.inputs.close();
         if self.shut() {
             self.tracker.exit();
         }

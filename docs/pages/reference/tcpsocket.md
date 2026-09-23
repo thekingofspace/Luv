@@ -20,7 +20,7 @@ An open socket keeps the game running. Call [Close](#close) when you are done.
 | Name | Type | Description |
 | --- | --- | --- |
 | `ClassName` | `string` | Always `"TcpSocket"`. Read only. |
-| `IsOpen` | `boolean` | `true` until the socket closes. It turns `false` right before [Closed](#closed) fires, not when you call Close. Read only. |
+| `IsOpen` | `boolean` | `true` until the socket closes. Close and [Destroy](basegameobject.md#destroy) turn it `false` at once. When the other side closes it turns `false` right before [Closed](#closed) fires. Read only. |
 | `RemoteHost` | `string` | The IP address of the other side. Read only. |
 | `RemotePort` | `number` | The port of the other side. Read only. |
 | `LocalPort` | `number` | The port on this side. Read only. |

@@ -344,7 +344,7 @@ async fn modifiers_shape_the_sound_on_its_way_out() {
             r#"
 local function capture(source, chain)
     local bytes = Sound:ToBytes({ Format = enum.AudioFormat.Float32 })
-    local state = { left = 0, right = 0, count = 0, finite = true }
+    local state = { left = 0, right = 0, count = 0, finite = true, node = bytes }
     bytes.OnIncoming:BindHandler("collect", function(packet)
         state.count += 1
         for index, sample in packet:GetSamples() do
@@ -426,8 +426,10 @@ tone:Stop()
 high:Stop()
 sleep(40)
 tail.left = 0
+local before = tail.count
 sleep(150)
 results.echoTail = tail.left
+results.tailPackets = tail.count - before
 results.unknown = tostring(select(2, pcall(function()
     Sound:Modifier("Kazoo")
 end)))
@@ -453,7 +455,9 @@ end)))
     let loudness = number(&results, "meterLoudness");
     assert!(loudness > 0.2 && loudness < 0.36, "meter loudness {loudness}");
     assert!(number(&results, "count") > 5.0);
-    assert!(number(&results, "echoTail") > 0.02, "the echo should keep ringing after the tone stops");
+    let tail = number(&results, "echoTail");
+    let packets = number(&results, "tailPackets");
+    assert!(tail > 0.02, "the echo should keep ringing after the tone stops, got {tail} over {packets} packets");
     assert!(results.get::<String>("unknown").unwrap().contains("'Kazoo' is not a sound modifier"));
     let broken: Vec<String> = outcome.global("broken");
     assert!(broken.is_empty(), "modifiers misbehaved: {broken:?}");

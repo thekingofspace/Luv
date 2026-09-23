@@ -8,6 +8,7 @@ luv test my-game
 luv build my-game
 luv run my-game
 luv package my-game
+luv luaurc my-game
 ```
 
 ## luv init
@@ -71,6 +72,29 @@ luv package [path] [--console]
 Does everything `luv build` does, then makes the finished game in `build/package/`. The folder holds one program plus any native plugins and containers. See [Shipping your game](../manual/shipping.md).
 
 On Windows the game opens without a console window. Add `--console` to keep one.
+
+## luv luaurc
+
+```shell
+luv luaurc [path]
+```
+
+Writes the container aliases into `.luaurc` without building anything. `luv aliases` does the same. `luv test`, `luv build` and `luv package` already do this, so you only need the command when you want the file updated on its own, such as right after you add a container and want your editor to find it.
+
+It prints one line per change:
+
+```shell
+Updated C:\my-game\.luaurc
+  + Expansion
+```
+
+| Mark | Meaning |
+| --- | --- |
+| `+` | The alias was added. |
+| `~` | The alias moved, so luv pointed it at the new folder. |
+| `-` | The container is gone, so luv took the alias out. |
+
+When nothing changed it says the file is already up to date. See [Scripts and modules](../manual/scripts.md#aliases-luv-writes-for-you).
 
 ## luv --version
 

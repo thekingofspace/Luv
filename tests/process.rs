@@ -228,3 +228,25 @@ async fn exposes_useful_folders() {
     assert!(!outcome.global::<String>("executable").is_empty());
     assert!(outcome.global::<bool>("frozen"));
 }
+
+#[tokio::test]
+async fn destroying_a_child_closes_its_pipes() {
+    let outcome = run_script(
+        r#"
+        local Process = import("Process")
+        local windows = Process.os == "windows"
+        local child = Process.start(windows and "ping" or "sleep", windows and { "-n", "30", "127.0.0.1" } or { "30" })
+        local stdin = child.Stdin
+        child:Destroy()
+        wrote, message = pcall(function() stdin:write("late\n") end)
+        note = tostring(message)
+        same = child.Stdin == stdin
+        "#,
+    )
+    .await;
+    outcome.assert_clean();
+    assert!(!outcome.global::<bool>("wrote"));
+    let note: String = outcome.global("note");
+    assert!(note.contains("closed") || note.contains("destroyed"), "{note}");
+    assert!(outcome.global::<bool>("same"));
+}

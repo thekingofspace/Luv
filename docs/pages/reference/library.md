@@ -121,7 +121,7 @@ print(add(40, 2), greeting())
 library:Destroy()
 ```
 
-Stops the thread of the library. Calls that already wait still finish. After this:
+Stops the thread of the library and lets go of the `Exports` table, so its functions and classes are collected instead of living until the Library itself is. Calls that already wait still finish. After this:
 
 - `Exports`, `HasSymbol`, `GetSymbol` and `GetFunction` error with `Library 'mathlib' has been destroyed`.
 - Its functions error with `cannot call add because its library was unloaded`. Functions made with `Parallel = true` keep working.

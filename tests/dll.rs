@@ -604,3 +604,34 @@ results.destroyed = lib:GetSymbol("destroyed_counters"):Read("i32")
     assert_eq!(number(&results, "count"), 7.0);
     assert!(number(&results, "destroyed") >= 4.0, "destroyed {}", number(&results, "destroyed"));
 }
+
+#[tokio::test]
+async fn destroying_a_library_lets_go_of_its_exports() {
+    let outcome = run_dll(
+        r#"
+local DLL = import("DLL")
+results = {}
+local weak = setmetatable({}, { __mode = "v" })
+
+local function load()
+    local lib = DLL.Load(FIXTURE)
+    weak.exports = lib.Exports
+    return lib
+end
+
+local lib = load()
+results.held = weak.exports ~= nil
+lib:Destroy()
+collectgarbage()
+collectgarbage()
+results.released = weak.exports == nil
+results.blocked = tostring(select(2, pcall(function() return lib.Exports end)))
+"#,
+    )
+    .await;
+    outcome.assert_clean();
+    let results: Table = outcome.global("results");
+    assert!(flag(&results, "held"));
+    assert!(flag(&results, "released"), "the Exports table stayed alive after Destroy");
+    assert!(text(&results, "blocked").contains("destroyed"));
+}

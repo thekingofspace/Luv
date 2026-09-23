@@ -20,7 +20,7 @@ An open server keeps the game running. Call [Close](#close) when you are done. C
 | Name | Type | Description |
 | --- | --- | --- |
 | `ClassName` | `string` | Always `"TcpServer"`. Read only. |
-| `IsOpen` | `boolean` | `true` until the server closes. Read only. |
+| `IsOpen` | `boolean` | `true` until the server closes. Close and [Destroy](basegameobject.md#destroy) turn it `false` at once. Read only. |
 | `Host` | `string` | The IP address the server listens on. Read only. |
 | `Port` | `number` | The port the server listens on. When you passed `0`, this is the port the system picked. Read only. |
 

@@ -7,9 +7,11 @@ use std::thread;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
 use luv::builder;
+use luv::luaurc;
 use luv::packager::{self, IconReport};
 use luv::plugins::{self, Built};
 use luv::project::{self, GameInfo, Project};
+use luv::runtime::aliases;
 use luv::runtime::{Engine, EngineBuilder, Runtime, THREAD_STACK_SIZE};
 use luv::vfs::{Pak, Vfs};
 use luv::window::{DesktopWindows, WindowSystem};
@@ -39,6 +41,11 @@ enum Command {
     },
     #[command(about = "Compile the workspace into a bytecode package")]
     Build {
+        #[arg(default_value = ".", help = "Workspace directory")]
+        path: PathBuf,
+    },
+    #[command(alias = "aliases", about = "Write the container aliases into .luaurc")]
+    Luaurc {
         #[arg(default_value = ".", help = "Workspace directory")]
         path: PathBuf,
     },
@@ -130,6 +137,7 @@ async fn execute_command(command: Command, desktop: Option<DesktopWindows>, pack
         Command::Init { path, name } => init(&path, name),
         Command::Test { path, args } => test(&path, args, windows).await,
         Command::Build { path } => build(&path).await,
+        Command::Luaurc { path } => sync_aliases(&path),
         Command::Run { path, args } => run(&path, args, windows, packaged).await,
         Command::Package { path, console } => package(&path, console).await,
     }
@@ -138,6 +146,45 @@ async fn execute_command(command: Command, desktop: Option<DesktopWindows>, pack
 async fn natives(project: &Project) -> Result<Vec<Built>> {
     let project = project.clone();
     tokio::task::spawn_blocking(move || plugins::build(&project)).await?
+}
+
+fn report_aliases(report: &luaurc::AliasReport, quiet: bool) {
+    if let Some(note) = &report.note {
+        eprintln!("note: {note}");
+    }
+    if !report.changed() {
+        return;
+    }
+    let message = format!("Updated .luaurc ({})", report.summary());
+    if quiet {
+        eprintln!("{message}");
+    } else {
+        println!("  ~ {message}");
+    }
+}
+
+fn sync_aliases(path: &Path) -> Result<()> {
+    let project = Project::discover(path)?;
+    let report = luaurc::sync(&project)?;
+    let file = project.root.join(aliases::LUAURC);
+    if let Some(note) = &report.note {
+        eprintln!("note: {note}");
+    }
+    if !report.changed() {
+        println!("{} is already up to date", file.display());
+        return Ok(());
+    }
+    println!("Updated {}", file.display());
+    for name in &report.added {
+        println!("  + {name}");
+    }
+    for name in &report.updated {
+        println!("  ~ {name} (updated)");
+    }
+    for name in &report.removed {
+        println!("  - {name} (removed)");
+    }
+    Ok(())
 }
 
 fn warn_unpacked(libraries: &[String]) {
@@ -189,6 +236,7 @@ async fn test(path: &Path, args: Vec<String>, windows: Option<Arc<dyn WindowSyst
             eprintln!("Built container {} v{}", container.name, container.version);
         }
     }
+    report_aliases(&luaurc::sync(&project)?, true);
     let game = Engine::builder(Arc::new(vfs))
         .args(args)
         .game(project.manifest.game.name.clone(), project.root.clone())
@@ -201,6 +249,7 @@ async fn test(path: &Path, args: Vec<String>, windows: Option<Arc<dyn WindowSyst
 async fn build(path: &Path) -> Result<()> {
     let project = Project::discover(path)?;
     let game = &project.manifest.game;
+    let aliases = luaurc::sync(&project)?;
     let report = builder::build(&project).await?;
     let libraries = natives(&project).await?;
     let containers = builder::build_containers(&project, &libraries).await?;
@@ -228,6 +277,7 @@ async fn build(path: &Path) -> Result<()> {
             container.version
         );
     }
+    report_aliases(&aliases, false);
     warn_unpacked(&report.unpacked_libraries);
     Ok(())
 }
@@ -240,6 +290,7 @@ fn container_file(path: &Path) -> String {
 
 async fn package(path: &Path, console: bool) -> Result<()> {
     let project = Project::discover(path)?;
+    let aliases = luaurc::sync(&project)?;
     let report = builder::build(&project).await?;
     let libraries = natives(&project).await?;
     let containers: Vec<PathBuf> = builder::build_containers(&project, &libraries)
@@ -272,6 +323,7 @@ async fn package(path: &Path, console: bool) -> Result<()> {
     for container in &packaged.containers {
         println!("  + {container}");
     }
+    report_aliases(&aliases, false);
     if let IconReport::Missing(source) = &packaged.icon {
         eprintln!("warning: the icon {source} set in build.toml does not exist, so the game has no icon");
     }

@@ -298,6 +298,67 @@ fn runaway_signal_recursion_is_reported_instead_of_crashing() {
 }
 
 #[tokio::test]
+async fn unbinding_and_destroying_let_go_of_handlers() {
+    let outcome = run_script(
+        r#"
+local Messenger = import("Messenger")
+local Signal = import("Signal")
+
+local held = setmetatable({}, { __mode = "v" })
+
+local function bind(signal, id, key)
+	local kept = {}
+	held[key] = kept
+	signal:BindHandler(id, function()
+		return kept
+	end)
+end
+
+local unbound = Signal.new()
+bind(unbound, "handler", "unbound")
+local destroyed = Signal.new()
+bind(destroyed, "handler", "destroyed")
+local waiting = Signal.new()
+bind(waiting, "handler", "waiting")
+
+local function subscribe(key)
+	local kept = {}
+	held[key] = kept
+	return Messenger:Subscribe("Topic", function()
+		return kept
+	end)
+end
+
+local subscribed = subscribe("subscribed")
+subscribe("dropped")
+
+collectgarbage("collect")
+results = {
+	before = held.unbound ~= nil and held.destroyed ~= nil and held.subscribed ~= nil,
+}
+
+unbound:UnBind("handler")
+destroyed:Destroy()
+Messenger:Unsubscribe(subscribed)
+collectgarbage("collect")
+collectgarbage("collect")
+
+results.unbound = held.unbound == nil
+results.destroyed = held.destroyed == nil
+results.subscribed = held.subscribed == nil
+results.waiting = held.waiting ~= nil
+results.dropped = held.dropped ~= nil
+"#,
+    )
+    .await;
+    outcome.assert_clean();
+    let results: mlua::Table = outcome.global("results");
+    for key in ["before", "unbound", "destroyed", "subscribed", "waiting", "dropped"] {
+        assert!(results.get::<bool>(key).unwrap(), "{key} failed");
+    }
+}
+
+#[tokio::test]
 async fn rust_can_bind_fire_and_invoke() {
     let dir = main_script("return nil\n");
     let runtime = Runtime::new(Engine::new(Arc::new(DirVfs::new(dir.path())))).unwrap();

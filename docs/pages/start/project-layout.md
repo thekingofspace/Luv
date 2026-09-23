@@ -42,6 +42,7 @@ Scripts can sit anywhere in the project, not only in `src`. Every `.luau` and `.
 ```tree
 build/
 ├── My-Game.luvit
+├── aliases.json
 ├── cube.dll
 ├── Expansion.cont
 ├── native-objects/
@@ -55,6 +56,7 @@ build/
 | Path | What it is |
 | --- | --- |
 | `My-Game.luvit` | The packed game made by `luv build`. It holds bytecode and assets. |
+| `aliases.json` | The list of aliases luv wrote into `.luaurc`. See [Scripts and modules](../manual/scripts.md#aliases-luv-writes-for-you). |
 | `cube.dll` or `libcube.so` | Native plugins built from `native/`. |
 | `Expansion.cont` | One file for each container. See [Containers and DLC](../manual/containers.md). |
 | `native-objects/` | Temporary files from the C compiler. |

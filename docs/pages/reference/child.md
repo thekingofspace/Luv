@@ -64,3 +64,5 @@ child:Destroy()
 ```
 
 Stops the program like [Kill](#kill) and marks the Child as destroyed. See [BaseGameObject](basegameobject.md#destroy).
+
+It also closes `Stdin`, `Stdout` and `Stderr`, so the pipes are handed back right away instead of when the Child is collected. The three fields still give you the same [File](file.md), and reading or writing one errors.

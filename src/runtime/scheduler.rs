@@ -1,4 +1,6 @@
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
+use std::ffi::c_void;
 use std::future::{Future, poll_fn};
 use std::pin::Pin;
 use std::rc::Rc;
@@ -188,7 +190,7 @@ type Reporter = Rc<dyn Fn(mlua::Error)>;
 pub struct Scheduler {
     tracker: Tracker,
     reporter: Reporter,
-    driving: Rc<RefCell<Vec<Thread>>>,
+    driving: Rc<RefCell<HashSet<*const c_void>>>,
 }
 
 impl Scheduler {
@@ -196,7 +198,7 @@ impl Scheduler {
         Self {
             tracker,
             reporter: Rc::new(reporter),
-            driving: Rc::new(RefCell::new(Vec::new())),
+            driving: Rc::new(RefCell::new(HashSet::new())),
         }
     }
 
@@ -229,7 +231,8 @@ impl Scheduler {
     }
 
     pub fn is_driving(&self, thread: &Thread) -> bool {
-        self.driving.borrow().contains(thread)
+        let pointer = thread.to_pointer();
+        self.driving.borrow().contains(&pointer)
     }
 
     pub fn spawn(&self, lua: &Lua, function: Function, args: impl IntoLuaMulti) {
@@ -301,11 +304,13 @@ impl Scheduler {
             }
         }
 
-        self.driving.borrow_mut().push(thread.clone());
+        let pointer = thread.to_pointer();
+        self.driving.borrow_mut().insert(pointer);
         let scheduler = self.clone();
         tokio::task::spawn_local(async move {
             let result = poll_fn(|context| scheduler.step(stream.as_mut(), context)).await;
-            scheduler.driving.borrow_mut().retain(|driven| *driven != thread);
+            scheduler.driving.borrow_mut().remove(&pointer);
+            drop(thread);
             scheduler.settle(result, then);
         });
     }

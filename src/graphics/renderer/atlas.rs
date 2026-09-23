@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use super::Map;
 
 use swash::scale::image::Image;
 use swash::scale::{Render, ScaleContext, Source};
@@ -52,7 +52,7 @@ pub struct Atlas {
     size: u32,
     shelves: Vec<Shelf>,
     next_y: u32,
-    glyphs: HashMap<GlyphKey, Option<GlyphEntry>>,
+    glyphs: Map<GlyphKey, Option<GlyphEntry>>,
     context: ScaleContext,
 }
 
@@ -101,7 +101,7 @@ impl Atlas {
             size: START_SIZE,
             shelves: Vec::new(),
             next_y: 0,
-            glyphs: HashMap::new(),
+            glyphs: Map::default(),
             context: ScaleContext::new(),
         }
     }

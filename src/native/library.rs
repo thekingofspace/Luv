@@ -584,6 +584,7 @@ impl GameObject for Library {
 
     fn on_destroy(&mut self) {
         self.shared.worker.close();
+        *self.table.borrow_mut() = None;
     }
 }
 

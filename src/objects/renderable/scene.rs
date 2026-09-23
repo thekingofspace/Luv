@@ -548,6 +548,27 @@ impl Scene {
         Some(result)
     }
 
+    pub fn write_changed(
+        &self,
+        id: ObjectId,
+        action: impl FnOnce(&mut Object, &mut Resources, &mut BTreeSet<(u32, u32)>) -> mlua::Result<bool>,
+    ) -> Option<mlua::Result<()>> {
+        let mut state = self.state.borrow_mut();
+        let State {
+            entries,
+            resources,
+            dirty,
+            ..
+        } = &mut *state;
+        let entry = entries.get_mut(id)?;
+        let result = action(&mut entry.object, resources, &mut entry.slots);
+        if !matches!(result, Ok(false)) && !entry.dirty {
+            entry.dirty = true;
+            dirty.push(id);
+        }
+        Some(result.map(|_| ()))
+    }
+
     pub fn remove(&self, id: ObjectId) {
         let entry = {
             let mut state = self.state.borrow_mut();

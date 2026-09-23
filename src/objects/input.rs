@@ -549,13 +549,6 @@ impl Inputs {
         self.keys.borrow_mut().clear();
         self.buttons.borrow_mut().clear();
         self.touches.borrow_mut().clear();
-        self.keyboard.borrow_mut().take();
-        self.mouse.borrow_mut().take();
-        self.touch.borrow_mut().take();
-        self.controller.borrow_mut().take();
-    }
-
-    pub fn destroy(&self) {
         if let Some(signals) = signals_of(&self.keyboard) {
             destroy_signals(signals.all());
         }
@@ -568,7 +561,10 @@ impl Inputs {
         if let Some(signals) = signals_of(&self.controller) {
             destroy_signals(signals.all());
         }
-        self.close();
+        self.keyboard.borrow_mut().take();
+        self.mouse.borrow_mut().take();
+        self.touch.borrow_mut().take();
+        self.controller.borrow_mut().take();
     }
 }
 

@@ -119,6 +119,8 @@ impl ContainerProject {
 pub struct BuildSettings {
     #[serde(default = "default_output")]
     pub output: String,
+    #[serde(default = "default_aliases")]
+    pub aliases: bool,
 }
 
 impl GameInfo {
@@ -135,6 +137,7 @@ impl Default for BuildSettings {
     fn default() -> Self {
         Self {
             output: default_output(),
+            aliases: default_aliases(),
         }
     }
 }
@@ -149,6 +152,10 @@ fn default_main() -> String {
 
 fn default_output() -> String {
     "build".to_owned()
+}
+
+fn default_aliases() -> bool {
+    true
 }
 
 #[derive(Clone)]

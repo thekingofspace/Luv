@@ -114,6 +114,8 @@ callback:Destroy()
 
 Turns the callback off and lets go of the handler function. Calls from C return 0 after this, and reading `Pointer` errors. See [BaseGameObject](basegameobject.md#destroy).
 
+The address itself stays valid until the game ends. A plugin that kept the pointer can still call it and gets 0 back, rather than jumping into freed memory.
+
 ```luau
 local DLL = import("DLL")
 

@@ -92,7 +92,14 @@ impl EnumItem {
     pub const TYPE_NAME: &'static str = "EnumItem";
 
     pub fn find(enum_type: &str, name: &str) -> Option<EnumItem> {
-        items(enum_type).into_iter().find(|item| item.name == name)
+        entries(enum_type).and_then(|(enum_type, names)| {
+            let index = names.iter().position(|entry| *entry == name)?;
+            Some(EnumItem {
+                enum_type,
+                name: names[index],
+                value: index as u32,
+            })
+        })
     }
 
     pub fn canonical(self, lua: &Lua) -> Result<Value> {
@@ -112,8 +119,22 @@ impl EnumItem {
     }
 
     pub fn named(enum_type: &str, value: u32) -> Option<EnumItem> {
-        items(enum_type).into_iter().find(|item| item.value == value)
+        entries(enum_type).and_then(|(enum_type, names)| {
+            let name = names.get(value as usize)?;
+            Some(EnumItem {
+                enum_type,
+                name,
+                value,
+            })
+        })
     }
+}
+
+fn entries(enum_type: &str) -> Option<(&'static str, &'static [&'static str])> {
+    ENUMS
+        .iter()
+        .find(|(name, _)| *name == enum_type)
+        .map(|(name, names)| (*name, *names))
 }
 
 pub fn items(enum_type: &str) -> Vec<EnumItem> {

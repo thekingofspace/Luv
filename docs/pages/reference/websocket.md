@@ -20,7 +20,7 @@ An open WebSocket keeps the game running. Call [Close](#close) when you are done
 | Name | Type | Description |
 | --- | --- | --- |
 | `ClassName` | `string` | Always `"WebSocket"`. Read only. |
-| `IsOpen` | `boolean` | `true` until the connection closes. It turns `false` right before [Closed](#closed) fires. Read only. |
+| `IsOpen` | `boolean` | `true` until the connection closes. Close and [Destroy](basegameobject.md#destroy) turn it `false` at once. When the other side closes it turns `false` right before [Closed](#closed) fires. Read only. |
 
 ## Methods
 

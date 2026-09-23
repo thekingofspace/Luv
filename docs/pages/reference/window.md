@@ -245,6 +245,8 @@ window:Close()
 
 Closes the window and fires [Closed](#closed). Calling it on a closed window does nothing. See [What happens when a window closes](#what-happens-when-a-window-closes).
 
+After `Closed` has fired, luv destroys every signal of the window and of its input APIs, so their handlers are dropped. Anything those handlers held goes away with them.
+
 If you call it inside a [PreFrame](#preframe) or [OnFrame](#onframe) handler, the other frame signals of that frame still fire. No new frames start.
 
 ### Destroy
@@ -253,9 +255,9 @@ If you call it inside a [PreFrame](#preframe) or [OnFrame](#onframe) handler, th
 window:Destroy()
 ```
 
-Closes the window without firing [Closed](#closed). It also destroys every signal of the window and of its input APIs, so their handlers are gone. A coroutine that waits on one of these signals gets an error like `Closed was destroyed while it was being waited on`.
+Closes the window without firing [Closed](#closed). Like [Close](#close), it destroys every signal of the window and of its input APIs, so their handlers are gone. A coroutine that waits on one of these signals gets an error like `Closed was destroyed while it was being waited on`.
 
-Use `Close` when you want your `Closed` handlers to run. Use `Destroy` when you want the window and all of its signals gone. See [BaseGameObject](basegameobject.md#destroy).
+Use `Close` when you want your `Closed` handlers to run. Use `Destroy` when you want the window gone without them. See [BaseGameObject](basegameobject.md#destroy).
 
 ## Signals
 
@@ -362,6 +364,7 @@ end)
 - The sounds of the window stop and its sound nodes are destroyed. The Sound API errors with `this Sound API belongs to a window that is closed`.
 - [GetAPI](#getapi) errors.
 - [Closed](#closed) fires, unless the window was destroyed.
+- Every signal of the window and of its input APIs is destroyed, so their handlers are dropped. Binding a handler after that errors.
 
 An open window keeps the game running. After the last window closes, the game ends when no other work is left.
 

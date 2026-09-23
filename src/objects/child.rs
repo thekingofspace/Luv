@@ -107,6 +107,11 @@ impl GameObject for Child {
 
     fn on_destroy(&mut self) {
         self.kill();
+        for pipe in [&self.stdin, &self.stdout, &self.stderr].into_iter().flatten() {
+            if let Ok(mut file) = pipe.borrow_mut::<File>() {
+                file.destroy();
+            }
+        }
     }
 }
 

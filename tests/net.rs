@@ -362,3 +362,39 @@ finished = true
     outcome.assert_clean();
     assert!(outcome.global::<bool>("finished"));
 }
+
+#[tokio::test]
+async fn destroying_a_socket_closes_it_straight_away() {
+    let outcome = run_script(
+        r#"
+local Net = import("Net")
+state = {}
+local server = Net.TcpListen(0, "127.0.0.1")
+local client = Net.TcpConnect("127.0.0.1", server.Port)
+state.openBefore = client.IsOpen
+client:Destroy()
+state.openAfter = client.IsOpen
+local ok, message = pcall(function() client:Send("late") end)
+state.sent = ok
+state.error = tostring(message)
+
+local udp = Net.UdpBind(0, "127.0.0.1")
+udp:Destroy()
+state.udpOpen = udp.IsOpen
+
+server:Destroy()
+state.serverOpen = server.IsOpen
+"#,
+        None,
+    )
+    .await;
+    outcome.assert_clean();
+    let state: Table = outcome.global("state");
+    assert!(state.get::<bool>("openBefore").unwrap());
+    assert!(!state.get::<bool>("openAfter").unwrap());
+    assert!(!state.get::<bool>("sent").unwrap());
+    let message: String = state.get("error").unwrap();
+    assert!(message.contains("closed"), "{message}");
+    assert!(!state.get::<bool>("udpOpen").unwrap());
+    assert!(!state.get::<bool>("serverOpen").unwrap());
+}

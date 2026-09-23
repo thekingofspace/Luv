@@ -18,7 +18,7 @@ An open socket keeps the game running. Call [Close](#close) when you are done.
 | Name | Type | Description |
 | --- | --- | --- |
 | `ClassName` | `string` | Always `"UdpSocket"`. Read only. |
-| `IsOpen` | `boolean` | `true` until the socket closes. Read only. |
+| `IsOpen` | `boolean` | `true` until the socket closes. Close and [Destroy](basegameobject.md#destroy) turn it `false` at once. Read only. |
 | `Host` | `string` | The IP address the socket uses. Read only. |
 | `Port` | `number` | The port the socket uses. Read only. |
 

@@ -569,6 +569,47 @@ other:Close()
 }
 
 #[tokio::test]
+async fn closing_a_window_lets_go_of_its_handlers() {
+    let dir = main_script(
+        r#"
+local Window = import("Window")
+
+local held = setmetatable({}, { __mode = "v" })
+local window = Window.new({ Title = "Cleanup" })
+local input = window:GetAPI("Input")
+
+local function bind(signal, key)
+	local kept = {}
+	held[key] = kept
+	signal:BindHandler("hold", function()
+		return kept
+	end)
+end
+
+bind(window.PreFrame, "frame")
+bind(window.Closed, "closed")
+bind(input.KeyDown, "key")
+sleep(30)
+collectgarbage("collect")
+results = { before = held.frame ~= nil and held.key ~= nil and held.closed ~= nil }
+
+window:Close()
+collectgarbage("collect")
+collectgarbage("collect")
+results.frame = held.frame == nil
+results.closed = held.closed == nil
+results.key = held.key == nil
+"#,
+    );
+    let (outcome, _) = run_windowed(dir.path()).await;
+    outcome.assert_clean();
+    let results: Table = outcome.global("results");
+    for key in ["before", "frame", "closed", "key"] {
+        assert!(results.get::<bool>(key).unwrap(), "{key} failed");
+    }
+}
+
+#[tokio::test]
 async fn windows_use_the_game_icon_until_a_script_sets_one() {
     let dir = workspace(&[(
         "src/main.luau",
