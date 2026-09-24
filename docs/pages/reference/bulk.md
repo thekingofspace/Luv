@@ -29,7 +29,7 @@ In error messages, an object shows up as its `Name`. A plain table shows up as `
 Bulk.BulkUpdate(updates: { [any]: { [string]: any } })
 ```
 
-Sets properties on many objects. Each key is an object or a table. Each value is a table of property names and new values. It does the same as setting each property yourself.
+Sets properties on many objects. Each key is an object or a table. Each value is a table of property names and new values. It does the same as setting each property yourself, in one call instead of one call per property.
 
 ```luau
 local Window = import("Window")

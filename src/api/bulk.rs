@@ -1,6 +1,32 @@
-use mlua::{AnyUserData, Lua, ObjectLike, Result, Table, Value};
+use mlua::{AnyUserData, Function, Lua, ObjectLike, Result, Table, Value};
 
 use crate::objects::{Renderable, Shader};
+
+const APPLY: &str = r#"
+local blame = ...
+local type = type
+return function(updates)
+    local object, field
+    local ok, problem = pcall(function()
+        for target, properties in updates do
+            object, field = target, nil
+            if type(properties) ~= "table" then
+                error(nil, 0)
+            end
+            for name, value in properties do
+                field = name
+                if type(name) ~= "string" then
+                    error(nil, 0)
+                end
+                target[name] = value
+            end
+        end
+    end)
+    if not ok then
+        blame(updates, object, field, problem)
+    end
+end
+"#;
 
 fn describe(object: &Value) -> String {
     match object {
@@ -10,40 +36,37 @@ fn describe(object: &Value) -> String {
     }
 }
 
-pub fn update(updates: Table) -> Result<()> {
-    for pair in updates.pairs::<Value, Value>() {
-        let (object, properties) = pair?;
-        let Value::Table(properties) = properties else {
-            return Err(mlua::Error::runtime(format!(
-                "the update for {} must be a table of properties, got {}",
-                describe(&object),
-                properties.type_name()
-            )));
-        };
-        for property in properties.pairs::<Value, Value>() {
-            let (key, value) = property?;
-            let Value::String(name) = &key else {
-                return Err(mlua::Error::runtime(format!(
-                    "property names must be strings, got {} for {}",
-                    key.type_name(),
-                    describe(&object)
-                )));
-            };
-            let applied = match &object {
-                Value::UserData(userdata) => userdata.set(key.clone(), value),
-                Value::Table(table) => table.set(key.clone(), value),
-                other => Err(mlua::Error::runtime(format!("cannot update a {} value", other.type_name()))),
-            };
-            applied.map_err(|error| {
-                mlua::Error::runtime(format!(
-                    "cannot set {} on {}: {error}",
-                    name.to_string_lossy(),
-                    describe(&object)
-                ))
-            })?;
-        }
+fn reason(problem: &Value) -> String {
+    match problem {
+        Value::String(text) => text.to_string_lossy(),
+        Value::Error(error) => error.to_string(),
+        other => other.type_name().to_owned(),
     }
-    Ok(())
+}
+
+fn explain(updates: &Table, object: &Value, field: &Value, problem: &Value) -> mlua::Error {
+    let properties = updates.get::<Value>(object.clone()).unwrap_or(Value::Nil);
+    if !matches!(properties, Value::Table(_)) {
+        return mlua::Error::runtime(format!(
+            "the update for {} must be a table of properties, got {}",
+            describe(object),
+            properties.type_name()
+        ));
+    }
+    match field {
+        Value::String(name) => mlua::Error::runtime(format!(
+            "cannot set {} on {}: {}",
+            name.to_string_lossy(),
+            describe(object),
+            reason(problem)
+        )),
+        Value::Nil => mlua::Error::runtime(format!("cannot update {}", describe(object))),
+        other => mlua::Error::runtime(format!(
+            "property names must be strings, got {} for {}",
+            other.type_name(),
+            describe(object)
+        )),
+    }
 }
 
 pub fn write_shader_data(shader: AnyUserData, updates: Table) -> Result<()> {
@@ -71,7 +94,13 @@ pub fn write_shader_data(shader: AnyUserData, updates: Table) -> Result<()> {
 
 pub fn create(lua: &Lua) -> Result<Table> {
     let bulk = lua.create_table()?;
-    bulk.set("BulkUpdate", lua.create_function(|_, updates: Table| update(updates))?)?;
+    let blame = lua.create_function(
+        |_, (updates, object, field, problem): (Table, Value, Value, Value)| -> Result<()> {
+            Err(explain(&updates, &object, &field, &problem))
+        },
+    )?;
+    let apply: Function = lua.load(APPLY).set_name("=luv.bulk").call(blame)?;
+    bulk.set("BulkUpdate", apply)?;
     bulk.set(
         "BulkWriteShaderData",
         lua.create_function(|_, (shader, updates): (AnyUserData, Table)| write_shader_data(shader, updates))?,

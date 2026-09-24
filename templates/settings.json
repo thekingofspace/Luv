@@ -4,5 +4,13 @@
     },
     "luau-lsp.require.mode": "relativeToFile",
     "luau-lsp.platform.type": "standard",
-    "luau-lsp.fflags.enableNewSolver": true
+    "luau-lsp.fflags.enableNewSolver": true,
+    "luau-lsp.ignoreGlobs": [
+        "**/_Index/**",
+        "**/native/**/*.d.luau"
+    ],
+    "luau-lsp.completion.imports.ignoreGlobs": [
+        "**/_Index/**",
+        "**/native/**/*.d.luau"
+    ]
 }

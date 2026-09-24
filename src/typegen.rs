@@ -10,6 +10,7 @@ use crate::project::{Project, TYPES_FILE, TYPES_TEMPLATE};
 
 const MERGED: [&str; 2] = ["WindowAPIs", "Imports"];
 const SUFFIX: &str = ".d.luau";
+const DIRECTIVE: &str = "--!";
 
 #[derive(Default)]
 pub struct TypeReport {
@@ -75,6 +76,9 @@ fn split(text: &str) -> (String, Vec<(&'static str, Vec<String>)>) {
     let mut merges = Vec::new();
     let mut lines = text.lines();
     while let Some(line) = lines.next() {
+        if line.trim_start().starts_with(DIRECTIVE) {
+            continue;
+        }
         let Some(name) = MERGED.iter().find(|name| line.trim() == opener(name)) else {
             body.push_str(line);
             body.push('\n');

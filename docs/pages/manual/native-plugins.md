@@ -473,6 +473,10 @@ export type Imports = {
 
 In the file it writes, your fields sit at the end of `Imports` and `WindowAPIs` under a line that names where they came from, and your other types sit at the end of the file between two lines that name the file.
 
+A type file is a part of `types.d.luau`, not a file that stands on its own. It uses types that only exist once luv folds it in, and it adds fields to `Imports`, which is already there. Your editor would mark that, so luv tells it to leave these files alone. See [Plugin type files](../start/editor-setup.md#plugin-type-files) for the setting and for how to keep the file quiet while it is open.
+
+A type file is a part of `types.d.luau`, not a file that stands on its own. It uses types that only exist once luv folds it in, and it adds fields to `Imports`, which is already there. Your editor would mark that, so luv tells it to leave these files alone. See [Plugin type files](../start/editor-setup.md#plugin-type-files) for the setting and for how to keep the file quiet while it is open.
+
 Containers work the same way. A type file in the `native` folder of a container is folded in with the rest, so a container can ship a plugin and its types together. See [Containers](containers.md).
 
 ## Loading plugins

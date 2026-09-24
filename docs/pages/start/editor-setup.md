@@ -18,7 +18,15 @@ That is all. `luv init` already wrote `.vscode/settings.json` for you:
     },
     "luau-lsp.require.mode": "relativeToFile",
     "luau-lsp.platform.type": "standard",
-    "luau-lsp.fflags.enableNewSolver": true
+    "luau-lsp.fflags.enableNewSolver": true,
+    "luau-lsp.ignoreGlobs": [
+        "**/_Index/**",
+        "**/native/**/*.d.luau"
+    ],
+    "luau-lsp.completion.imports.ignoreGlobs": [
+        "**/_Index/**",
+        "**/native/**/*.d.luau"
+    ]
 }
 ```
 
@@ -28,6 +36,8 @@ That is all. `luv init` already wrote `.vscode/settings.json` for you:
 | `luau-lsp.require.mode` | Makes `require` paths work the same way luv reads them. |
 | `luau-lsp.platform.type` | Turns off Roblox globals. |
 | `luau-lsp.fflags.enableNewSolver` | Turns on the new type solver. The types do not work without it. |
+| `luau-lsp.ignoreGlobs` | Leaves plugin type files alone. See [Plugin type files](#plugin-type-files). |
+| `luau-lsp.completion.imports.ignoreGlobs` | Keeps plugin type files out of the auto import list. |
 
 ## The new type solver
 
@@ -63,6 +73,23 @@ luv writes the whole file, so do not edit it. It starts from the engine types th
 `luv init`, `luv test` and `luv build` all build it again from nothing. So a type file you add shows up, and a type file you delete leaves nothing behind. [luv types](command-line.md#luv-types) does only this step.
 
 A plugin type file adds its own types and can add names to `import` and to `window:GetAPI`. See [Type files](../manual/native-plugins.md#type-files).
+
+### Plugin type files
+
+A plugin type file is a part of a whole, not a file on its own. It names types that only exist once luv folds it in, and it adds fields to `Imports`, which is already there. Read alone it looks wrong, so the editor would mark it.
+
+`luau-lsp.ignoreGlobs` covers that. Every `.d.luau` file in a `native` folder is left alone, so nothing is reported for it.
+
+The language server still reads a file while you have it open. To keep it quiet then too, put these two lines at the top of the file:
+
+```text
+--!nocheck
+--!nolint
+```
+
+luv leaves those lines out when it folds the file in, so they never reach `types.d.luau`.
+
+`luv init` writes both settings into `.vscode/settings.json` for a new project. It leaves an existing settings file alone, so add them by hand in a project you already have.
 
 In the file luv writes, the added names sit at the end of `Imports` and `WindowAPIs` under a line that says which file they came from, and the added types sit at the end of the file between two lines that name the file.
 

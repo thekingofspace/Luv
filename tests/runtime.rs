@@ -239,7 +239,10 @@ fn init_fuses_plugin_type_files_into_the_game_types() {
     write(
         root,
         "native/physics.d.luau",
-        r#"export type Body = {
+        r#"--!nocheck
+--!nolint
+
+export type Body = {
 	Mass: number,
 	Push: (self: Body, force: UDim) -> (),
 }
@@ -279,6 +282,8 @@ export type WindowAPIs = {
     assert!(types.contains("-- luv plugin types from native/physics.d.luau"));
     assert!(types.contains("-- end of packs/tools/native/tools.d.luau"));
     assert!(types.contains("export type Physics_API = {"));
+    assert!(!types.contains("--!nocheck"), "a directive from a plugin file must not reach types.d.luau");
+    assert!(!types.contains("--!nolint"));
     assert!(types.contains("export type Tools_API = {"));
     assert!(types.contains("declare import: <K>(name: keyof<Imports> & K) -> index<Imports, K>"));
     assert_eq!(types.matches("export type Imports = {").count(), 1);
