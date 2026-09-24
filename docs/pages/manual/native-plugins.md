@@ -14,8 +14,14 @@ my-game/
 │   ├── luv.rs
 │   ├── mathlib.c
 │   ├── physics/
-│   │   ├── shapes.c
-│   │   └── solver.c
+│   │   ├── physics.c
+│   │   ├── physics.d.luau
+│   │   ├── shapes/
+│   │   │   ├── convex.c
+│   │   │   └── convex.h
+│   │   └── solver/
+│   │       ├── contacts.c
+│   │       └── contacts.h
 │   ├── counter/
 │   │   ├── Cargo.toml
 │   │   └── src/
@@ -30,7 +36,8 @@ my-game/
 | `luv.h`, `luv.rs` | Nothing. These are the plugin API for C and for Rust. See [Plugin API for C](../reference/native-c.md) and [Plugin API for Rust](../reference/native-rust.md). |
 | `mathlib.d.luau` | Nothing to build. A file ending in `.d.luau` is a type file. luv folds it into `types.d.luau`. See [Type files](#type-files). |
 | `mathlib.c` | `mathlib.dll` on Windows or `libmathlib.so` on Linux. Each C or C++ file right inside `native` becomes its own library, named after the file. |
-| `physics/` | `physics.dll` or `libphysics.so`. A folder with C or C++ files becomes one library, named after the folder. luv also finds the files in its subfolders. |
+| `physics/` | `physics.dll` or `libphysics.so`. A folder with C or C++ files becomes one library, named after the folder. |
+| `physics/shapes/`, `physics/solver/` | Nothing of their own. luv looks through every folder under `physics` and builds all the sources it finds into that one library. Nest them as deep as you like. |
 | `counter/` | `counter.dll` or `libcounter.so`. A folder with a `Cargo.toml` is a Rust crate. The library is named after the crate. |
 | `prebuilt.dll` | A copy with the same name. luv copies ready made libraries as they are. |
 
@@ -39,7 +46,9 @@ More rules:
 - C and C++ files end in `.c`, `.cc`, `.cpp` or `.cxx`. A library with any C++ file is built as C++.
 - Ready made libraries are `.dll` files on Windows. On Linux they are `.so` files, and files like `libsdk.so.1`. So one project can hold both builds of the same library.
 - luv skips every other file, like headers and type files.
-- The `native` folder is on the include path. So `#include "luv.h"` works from any subfolder.
+- The `native` folder is on the include path. So `#include "luv.h"` works from any subfolder, however deep.
+- A quoted include is looked for next to the file that asks for it first. So `physics.c` reads `#include "shapes/convex.h"` and `convex.c` reads `#include "../solver/contacts.h"`.
+- Keep one folder per plugin and put its parts in subfolders. Everything about that plugin, its sources, its headers and its type file, stays in one place.
 - Two entries that make the same file name stop the build.
 
 Every library ends up in the build folder, next to the `.luvit` file. See [The build folder](../start/project-layout.md#the-build-folder).

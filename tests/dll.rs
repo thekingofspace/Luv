@@ -471,6 +471,55 @@ fn native_plugins_build_from_sources_and_prebuilt_libraries() {
     assert!(again.iter().all(|library| !library.rebuilt));
 }
 
+#[test]
+fn a_plugin_folder_can_nest_its_own_modules() {
+    let dir = common::workspace(&[("src/main.luau", "print(1)
+")]);
+    let root = dir.path();
+    write(root, "native/engine/util/add.h", "int add_up(int a, int b);
+");
+    write(root, "native/engine/util/add.c", "#include \"add.h\"
+int add_up(int a, int b) { return a + b; }
+");
+    write(root, "native/engine/sim/step.h", "int step_twice(int value);
+");
+    write(
+        root,
+        "native/engine/sim/step.c",
+        "#include \"step.h\"
+#include \"../util/add.h\"
+int step_twice(int value) { return add_up(value, value); }
+",
+    );
+    write(
+        root,
+        "native/engine/engine.c",
+        "#include \"luv.h\"
+#include \"sim/step.h\"
+LUV_EXPORT int engine_double(int value) { return step_twice(value); }
+",
+    );
+    write(root, "native/engine/types/engine.d.luau", "export type Engine_API = {
+	Double: (value: number) -> number,
+}
+");
+    std::fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates").join("luv.h"),
+        root.join("native").join("luv.h"),
+    )
+    .unwrap();
+
+    let project = Project::load(root).unwrap();
+    let built = luv::plugins::build(&project).unwrap();
+    let files: Vec<String> = built.iter().map(|library| library.file.clone()).collect();
+    assert_eq!(files, [luv::plugins::library_file("engine")], "one folder makes one library");
+    assert!(built[0].path.is_file());
+
+    let (types, sources) = luv::typegen::generate(&project).unwrap();
+    assert_eq!(sources, ["native/engine/types/engine.d.luau"], "type files nest too");
+    assert!(types.contains("export type Engine_API = {"));
+}
+
 #[tokio::test]
 async fn libraries_register_classes_functions_and_events() {
     let outcome = run_dll(
