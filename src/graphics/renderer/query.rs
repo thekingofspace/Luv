@@ -4,7 +4,7 @@ use std::mem::size_of;
 use crate::graphics::QUERY_SHADER;
 use crate::graphics::geometry::{GpuHit, GpuQuery, Hit, Query};
 use crate::graphics::gpu::Gpu;
-use crate::graphics::reflect::OBJECTS_BINDING;
+use crate::graphics::reflect::{OBJECTS_BINDING, OUTLINES_BINDING};
 
 const HEADER: u64 = 16;
 const WORKGROUP: u32 = 64;
@@ -35,7 +35,7 @@ impl QueryState {
         };
         let objects_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("query objects"),
-            entries: &[storage(OBJECTS_BINDING, true)],
+            entries: &[storage(OBJECTS_BINDING, true), storage(OUTLINES_BINDING, true)],
         });
         let query_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("query"),
@@ -105,7 +105,14 @@ impl QueryState {
         }
     }
 
-    pub fn run(&mut self, gpu: &Gpu, objects: &wgpu::Buffer, count: u32, query: &Query) -> Result<Vec<Hit>, String> {
+    pub fn run(
+        &mut self,
+        gpu: &Gpu,
+        objects: &wgpu::Buffer,
+        outlines: &wgpu::Buffer,
+        count: u32,
+        query: &Query,
+    ) -> Result<Vec<Hit>, String> {
         if count == 0 {
             return Ok(Vec::new());
         }
@@ -118,10 +125,16 @@ impl QueryState {
         let objects_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("query objects"),
             layout: &self.objects_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: OBJECTS_BINDING,
-                resource: objects.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: OBJECTS_BINDING,
+                    resource: objects.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: OUTLINES_BINDING,
+                    resource: outlines.as_entire_binding(),
+                },
+            ],
         });
         let query_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("query"),

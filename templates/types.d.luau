@@ -825,6 +825,7 @@ export type RenderablePlacement = {
 
 export type RenderableShape = Renderable & RenderablePlacement & {
 	Shape: ShapeTypeEnum,
+	Outline: { UDim }?,
 	StrokeColor: Color,
 	StrokeThickness: number,
 }
@@ -837,6 +838,7 @@ export type RenderableImage = Renderable & RenderablePlacement & {
 	ResampleMode: ResampleModeEnum,
 	FlipX: boolean,
 	FlipY: boolean,
+	HitThreshold: number?,
 }
 
 export type RenderableText = Renderable & RenderablePlacement & {
@@ -890,6 +892,7 @@ export type RenderableCustomConfig = RenderableConfig & {
 
 export type RenderableShapeConfig = RenderableConfig & RenderablePlacementConfig & {
 	Shape: ShapeTypeEnum?,
+	Outline: { UDim }?,
 	StrokeColor: Color?,
 	StrokeThickness: number?,
 }
@@ -901,6 +904,7 @@ export type RenderableImageConfig = RenderableConfig & RenderablePlacementConfig
 	ResampleMode: ResampleModeEnum?,
 	FlipX: boolean?,
 	FlipY: boolean?,
+	HitThreshold: number?,
 }
 
 export type RenderableTextConfig = RenderableConfig & RenderablePlacementConfig & {
@@ -929,6 +933,8 @@ export type RenderableConfigs = {
 }
 
 export type RenderableAnyConfig = RenderableConfig & RenderablePlacementConfig & {
+	Outline: { UDim }?,
+	HitThreshold: number?,
 	VertexCount: number?,
 	InstanceCount: number?,
 	Shape: ShapeTypeEnum?,
@@ -1768,6 +1774,7 @@ export type NativeFunction = BaseGameObject & {
 export type Library = BaseGameObject & {
 	Path: string,
 	Exports: { [string]: any },
+	GetServices: (self: Library) -> { string },
 	HasSymbol: (self: Library, name: string) -> boolean,
 	GetSymbol: (self: Library, name: string) -> Pointer,
 	GetFunction: (

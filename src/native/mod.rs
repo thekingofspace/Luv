@@ -1,5 +1,6 @@
 mod callback;
 mod classes;
+mod host;
 mod library;
 mod marshal;
 mod memory;

@@ -9,6 +9,7 @@ pub const LUV_UNKNOWN_NAME: i32 = -1;
 pub const LUV_OUT_OF_RANGE: i32 = -2;
 pub const LUV_WRONG_KIND: i32 = -3;
 pub const LUV_INVALID: i32 = -4;
+pub const LUV_OFF_THREAD: i32 = -5;
 
 pub type LuvGetInstanceProcAddr = unsafe extern "system" fn(*mut c_void, *const c_char) -> *mut c_void;
 pub type LuvWriteData = unsafe extern "C" fn(*mut LuvRenderContext, *const c_char, u64, *const c_void, u64) -> i32;
@@ -79,7 +80,7 @@ impl LuvRenderContext {
     }
 }
 
-pub const LUV_API_VERSION: u32 = 1;
+pub const LUV_API_VERSION: u32 = 2;
 
 pub const LUV_WORKER: u32 = 0;
 pub const LUV_INLINE: u32 = 1;
@@ -95,6 +96,7 @@ pub const LUV_KIND_COLOR: i32 = 5;
 pub const LUV_KIND_OBJECT: i32 = 6;
 pub const LUV_KIND_POINTER: i32 = 7;
 pub const LUV_KIND_VALUE: i32 = 8;
+pub const LUV_KIND_BUFFER: i32 = 9;
 
 #[repr(C)]
 pub struct LuvCall {
@@ -114,6 +116,100 @@ pub struct LuvRegistry {
 #[repr(C)]
 pub struct LuvRef {
     _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct LuvService {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct LuvTask {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct LuvValue {
+    pub kind: i32,
+    pub flags: u32,
+    pub numbers: [f64; 4],
+    pub data: *const c_void,
+    pub length: u64,
+    pub handle: *mut LuvRef,
+}
+
+impl LuvValue {
+    pub const NIL: LuvValue = LuvValue {
+        kind: LUV_KIND_NIL,
+        flags: 0,
+        numbers: [0.0; 4],
+        data: std::ptr::null(),
+        length: 0,
+        handle: std::ptr::null_mut(),
+    };
+
+    pub const fn boolean(flag: bool) -> LuvValue {
+        let mut value = LuvValue::NIL;
+        value.kind = LUV_KIND_BOOLEAN;
+        value.numbers[0] = if flag { 1.0 } else { 0.0 };
+        value
+    }
+
+    pub const fn number(number: f64) -> LuvValue {
+        let mut value = LuvValue::NIL;
+        value.kind = LUV_KIND_NUMBER;
+        value.numbers[0] = number;
+        value
+    }
+
+    pub fn text(bytes: &[u8]) -> LuvValue {
+        let mut value = LuvValue::NIL;
+        value.kind = LUV_KIND_STRING;
+        value.data = bytes.as_ptr().cast();
+        value.length = bytes.len() as u64;
+        value
+    }
+
+    pub fn buffer(bytes: &[u8]) -> LuvValue {
+        let mut value = LuvValue::text(bytes);
+        value.kind = LUV_KIND_BUFFER;
+        value
+    }
+
+    pub const fn udim(x: f64, y: f64, z: f64) -> LuvValue {
+        let mut value = LuvValue::NIL;
+        value.kind = LUV_KIND_UDIM;
+        value.numbers[0] = x;
+        value.numbers[1] = y;
+        value.numbers[2] = z;
+        value
+    }
+
+    pub const fn color(r: f64, g: f64, b: f64, a: f64) -> LuvValue {
+        let mut value = LuvValue::NIL;
+        value.kind = LUV_KIND_COLOR;
+        value.numbers = [r, g, b, a];
+        value
+    }
+
+    pub const fn held(handle: *mut LuvRef) -> LuvValue {
+        let mut value = LuvValue::NIL;
+        value.kind = LUV_KIND_VALUE;
+        value.handle = handle;
+        value
+    }
+
+    pub fn bytes(&self) -> &[u8] {
+        if self.data.is_null() || self.length == 0 {
+            return &[];
+        }
+        unsafe { std::slice::from_raw_parts(self.data.cast::<u8>(), self.length as usize) }
+    }
+
+    pub fn as_str(&self) -> Option<&str> {
+        std::str::from_utf8(self.bytes()).ok()
+    }
 }
 
 pub type LuvFunction = unsafe extern "C" fn(*mut LuvCall);
@@ -173,6 +269,13 @@ impl LuvProperty {
 }
 
 #[repr(C)]
+pub struct LuvServiceInfo {
+    pub name: *const c_char,
+    pub functions: *const LuvMethod,
+    pub properties: *const LuvProperty,
+}
+
+#[repr(C)]
 pub struct LuvClassInfo {
     pub name: *const c_char,
     pub size: u64,
@@ -225,6 +328,29 @@ pub struct LuvApi {
     pub send_event: unsafe extern "C" fn(*mut LuvCall) -> i32,
     pub print: unsafe extern "C" fn(*const c_char),
     pub warn: unsafe extern "C" fn(*const c_char),
+    pub define_service: unsafe extern "C" fn(*mut LuvRegistry, *const LuvServiceInfo) -> *const LuvService,
+    pub on_game_thread: unsafe extern "C" fn(*mut LuvCall) -> i32,
+    pub call_data: unsafe extern "C" fn(*mut LuvCall) -> *mut c_void,
+    pub arg_value: unsafe extern "C" fn(*mut LuvCall, i32, *mut LuvValue) -> i32,
+    pub push_value: unsafe extern "C" fn(*mut LuvCall, *const LuvValue),
+    pub push_buffer: unsafe extern "C" fn(*mut LuvCall, u64) -> *mut c_void,
+    pub get_import: unsafe extern "C" fn(*mut LuvCall, *const c_char) -> *mut LuvRef,
+    pub get_global: unsafe extern "C" fn(*mut LuvCall, *const c_char) -> *mut LuvRef,
+    pub set_global: unsafe extern "C" fn(*mut LuvCall, *const c_char, *const LuvValue) -> i32,
+    pub get_api: unsafe extern "C" fn(*mut LuvCall, *mut LuvRef, *const c_char) -> *mut LuvRef,
+    pub new_table: unsafe extern "C" fn(*mut LuvCall) -> *mut LuvRef,
+    pub new_signal: unsafe extern "C" fn(*mut LuvCall, *const c_char) -> *mut LuvRef,
+    pub new_function: unsafe extern "C" fn(*mut LuvCall, *const c_char, LuvFunction, *mut c_void, u32) -> *mut LuvRef,
+    pub read_member: unsafe extern "C" fn(*mut LuvCall, *mut LuvRef, *const c_char, *mut LuvValue) -> i32,
+    pub write_member: unsafe extern "C" fn(*mut LuvCall, *mut LuvRef, *const c_char, *const LuvValue) -> i32,
+    pub call_member:
+        unsafe extern "C" fn(*mut LuvCall, *mut LuvRef, *const c_char, *const LuvValue, i32, *mut LuvValue, i32) -> i32,
+    pub construct: unsafe extern "C" fn(*mut LuvCall, *mut LuvRef, *const c_char, *const LuvValue, i32) -> *mut LuvRef,
+    pub connect: unsafe extern "C" fn(*mut LuvCall, *mut LuvRef, *const c_char, LuvFunction, *mut c_void, u32) -> i32,
+    pub post_call: unsafe extern "C" fn(*mut LuvRef, *const c_char, *const LuvValue, i32) -> i32,
+    pub post_write: unsafe extern "C" fn(*mut LuvRef, *const c_char, *const LuvValue) -> i32,
+    pub schedule: unsafe extern "C" fn(*mut LuvCall, *const c_char, LuvFunction, *mut c_void, f64, u32) -> *mut LuvTask,
+    pub cancel: unsafe extern "C" fn(*mut LuvTask),
 }
 
 impl LuvApi {
@@ -271,5 +397,64 @@ impl LuvApi {
     pub unsafe fn log(&self, message: &str) {
         let message = CString::new(message.replace('\0', "")).unwrap_or_default();
         unsafe { (self.print)(message.as_ptr()) }
+    }
+
+    pub unsafe fn data<'a, T>(&self, call: *mut LuvCall) -> Option<&'a mut T> {
+        unsafe { (self.call_data)(call).cast::<T>().as_mut() }
+    }
+
+    pub unsafe fn value(&self, call: *mut LuvCall, index: i32) -> Option<LuvValue> {
+        let mut value = LuvValue::NIL;
+        match unsafe { (self.arg_value)(call, index, &mut value) } {
+            LUV_OK => Some(value),
+            _ => None,
+        }
+    }
+
+    pub unsafe fn push(&self, call: *mut LuvCall, value: &LuvValue) {
+        unsafe { (self.push_value)(call, value) }
+    }
+
+    pub unsafe fn push_buffer_bytes(&self, call: *mut LuvCall, bytes: &[u8]) -> bool {
+        let room = unsafe { (self.push_buffer)(call, bytes.len() as u64) };
+        if room.is_null() {
+            return false;
+        }
+        unsafe { room.cast::<u8>().copy_from_nonoverlapping(bytes.as_ptr(), bytes.len()) };
+        true
+    }
+
+    pub unsafe fn read(&self, call: *mut LuvCall, target: *mut LuvRef, name: &CStr) -> Option<LuvValue> {
+        let mut value = LuvValue::NIL;
+        match unsafe { (self.read_member)(call, target, name.as_ptr(), &mut value) } {
+            LUV_OK => Some(value),
+            _ => None,
+        }
+    }
+
+    pub unsafe fn write(&self, call: *mut LuvCall, target: *mut LuvRef, name: &CStr, value: &LuvValue) -> i32 {
+        unsafe { (self.write_member)(call, target, name.as_ptr(), value) }
+    }
+
+    pub unsafe fn call(&self, call: *mut LuvCall, target: *mut LuvRef, name: &CStr, args: &[LuvValue]) -> i32 {
+        unsafe {
+            (self.call_member)(
+                call,
+                target,
+                name.as_ptr(),
+                args.as_ptr(),
+                args.len() as i32,
+                std::ptr::null_mut(),
+                0,
+            )
+        }
+    }
+
+    pub unsafe fn make(&self, call: *mut LuvCall, api: *mut LuvRef, name: &CStr, args: &[LuvValue]) -> *mut LuvRef {
+        unsafe { (self.construct)(call, api, name.as_ptr(), args.as_ptr(), args.len() as i32) }
+    }
+
+    pub unsafe fn send(&self, target: *mut LuvRef, name: &CStr, args: &[LuvValue]) -> i32 {
+        unsafe { (self.post_call)(target, name.as_ptr(), args.as_ptr(), args.len() as i32) }
     }
 }

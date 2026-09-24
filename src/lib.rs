@@ -14,5 +14,6 @@ pub mod plugins;
 pub mod project;
 pub mod runtime;
 pub mod script;
+pub mod typegen;
 pub mod vfs;
 pub mod window;

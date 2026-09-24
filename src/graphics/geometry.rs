@@ -1,4 +1,5 @@
 use std::f64::consts::FRAC_1_SQRT_2;
+use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
 
@@ -13,6 +14,8 @@ pub enum ShapeKind {
     Hexagon,
     Octagon,
 }
+
+const PARALLEL: f64 = 1e-12;
 
 const RECTANGLE: [[f64; 2]; 4] = [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]];
 const TRIANGLE: [[f64; 2]; 3] = [[0.0, -0.5], [0.5, 0.5], [-0.5, 0.5]];
@@ -119,7 +122,9 @@ fn finite(a: Point) -> bool {
     a[0].is_finite() && a[1].is_finite()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+pub type Outline = Arc<[Point]>;
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Collider {
     pub id: u64,
     pub position: Point,
@@ -127,6 +132,7 @@ pub struct Collider {
     pub anchor: Point,
     pub rotation: f64,
     pub shape: ShapeKind,
+    pub outline: Option<Outline>,
 }
 
 impl Collider {
@@ -145,9 +151,14 @@ impl Collider {
     }
 
     fn polygon(&self) -> Option<Vec<Point>> {
-        self.shape
-            .outline()
-            .map(|outline| outline.iter().map(|point| [point[0] * self.size[0], point[1] * self.size[1]]).collect())
+        let scale = |outline: &[Point]| -> Vec<Point> {
+            outline.iter().map(|point| [point[0] * self.size[0], point[1] * self.size[1]]).collect()
+        };
+        match &self.outline {
+            Some(outline) if outline.len() >= 3 => Some(scale(outline)),
+            Some(_) => None,
+            None => self.shape.outline().map(scale),
+        }
     }
 
     fn radii(&self) -> Point {
@@ -180,19 +191,40 @@ pub struct Hit {
     pub normal: Point,
 }
 
-fn inside_polygon(points: &[Point], point: Point) -> bool {
-    let mut positive = false;
-    let mut negative = false;
-    for (index, start) in points.iter().enumerate() {
-        let end = points[(index + 1) % points.len()];
-        let side = cross(sub(end, *start), sub(point, *start));
-        if side > 0.0 {
-            positive = true;
-        } else if side < 0.0 {
-            negative = true;
-        }
+fn polygon_distance(points: &[Point], point: Point) -> f64 {
+    if points.len() < 3 {
+        return f64::INFINITY;
     }
-    !(positive && negative)
+    let mut nearest = f64::INFINITY;
+    let mut sign = 1.0;
+    let mut previous = points[points.len() - 1];
+    for current in points {
+        let current = *current;
+        let edge = sub(previous, current);
+        let offset = sub(point, current);
+        let squared = dot(edge, edge);
+        let along = if squared > 0.0 {
+            (dot(offset, edge) / squared).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let gap = sub(offset, scale(edge, along));
+        nearest = nearest.min(dot(gap, gap));
+        let crossing = [
+            point[1] >= current[1],
+            point[1] < previous[1],
+            edge[0] * offset[1] > edge[1] * offset[0],
+        ];
+        if crossing.iter().all(|value| *value) || crossing.iter().all(|value| !*value) {
+            sign = -sign;
+        }
+        previous = current;
+    }
+    sign * nearest.sqrt()
+}
+
+fn inside_polygon(points: &[Point], point: Point) -> bool {
+    polygon_distance(points, point) <= 0.0
 }
 
 fn inside_ellipse(radii: Point, point: Point) -> bool {
@@ -220,29 +252,40 @@ fn edge_distance(points: &[Point], point: Point) -> f64 {
         .fold(f64::INFINITY, f64::min)
 }
 
-fn project(points: &[Point], axis: Point) -> (f64, f64) {
-    points
-        .iter()
-        .map(|point| dot(*point, axis))
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), value| (low.min(value), high.max(value)))
+fn segments_cross(first: (Point, Point), second: (Point, Point)) -> bool {
+    let run = sub(first.1, first.0);
+    let span = sub(second.1, second.0);
+    let gap = sub(second.0, first.0);
+    let denominator = cross(run, span);
+    if denominator.abs() <= PARALLEL {
+        if cross(gap, run).abs() > PARALLEL {
+            return false;
+        }
+        let squared = dot(run, run);
+        if squared <= 0.0 {
+            return false;
+        }
+        let start = dot(gap, run) / squared;
+        let end = start + dot(span, run) / squared;
+        return start.min(end) <= 1.0 && start.max(end) >= 0.0;
+    }
+    let along = cross(gap, span) / denominator;
+    let across = cross(gap, run) / denominator;
+    (0.0..=1.0).contains(&along) && (0.0..=1.0).contains(&across)
 }
 
 fn polygons_overlap(first: &[Point], second: &[Point]) -> bool {
-    for polygon in [first, second] {
-        for (index, start) in polygon.iter().enumerate() {
-            let edge = sub(polygon[(index + 1) % polygon.len()], *start);
-            let axis = [-edge[1], edge[0]];
-            if axis == [0.0, 0.0] {
-                continue;
-            }
-            let (first_low, first_high) = project(first, axis);
-            let (second_low, second_high) = project(second, axis);
-            if first_high < second_low || second_high < first_low {
-                return false;
+    for (index, start) in first.iter().enumerate() {
+        let end = first[(index + 1) % first.len()];
+        for (other, begin) in second.iter().enumerate() {
+            let finish = second[(other + 1) % second.len()];
+            if segments_cross((*start, end), (*begin, finish)) {
+                return true;
             }
         }
     }
-    true
+    first.iter().any(|point| inside_polygon(second, *point))
+        || second.iter().any(|point| inside_polygon(first, *point))
 }
 
 fn ellipse_polygon_overlap(radii: Point, polygon: &[Point]) -> bool {
@@ -282,37 +325,38 @@ fn signed_area(points: &[Point]) -> f64 {
 }
 
 fn ray_polygon(points: &[Point], origin: Point, direction: Point) -> Option<(f64, Point)> {
+    if points.len() < 3 || inside_polygon(points, origin) {
+        return None;
+    }
     let orientation = signed_area(points).signum();
-    let mut enter = f64::NEG_INFINITY;
-    let mut exit = f64::INFINITY;
-    let mut normal = [0.0, 0.0];
+    let mut best: Option<(f64, Point)> = None;
     for (index, start) in points.iter().enumerate() {
-        let edge = sub(points[(index + 1) % points.len()], *start);
+        let end = points[(index + 1) % points.len()];
+        let edge = sub(end, *start);
         let outward = if orientation > 0.0 { [edge[1], -edge[0]] } else { [-edge[1], edge[0]] };
         let size = length(outward);
         if size == 0.0 {
             continue;
         }
         let outward = scale(outward, 1.0 / size);
-        let facing = dot(outward, direction);
-        let distance = dot(outward, sub(origin, *start));
-        if facing.abs() < 1e-12 {
-            if distance > 0.0 {
-                return None;
-            }
+        if dot(outward, direction) >= 0.0 {
             continue;
         }
-        let t = -distance / facing;
-        if facing < 0.0 {
-            if t > enter {
-                enter = t;
-                normal = outward;
-            }
-        } else {
-            exit = exit.min(t);
+        let denominator = cross(direction, edge);
+        if denominator.abs() <= PARALLEL {
+            continue;
+        }
+        let gap = sub(*start, origin);
+        let along = cross(gap, edge) / denominator;
+        let across = cross(gap, direction) / denominator;
+        if !(0.0..=1.0).contains(&along) || !(0.0..=1.0).contains(&across) {
+            continue;
+        }
+        if best.is_none_or(|(nearest, _)| along < nearest) {
+            best = Some((along, outward));
         }
     }
-    (enter <= exit && (0.0..=1.0).contains(&enter)).then_some((enter, normal))
+    best
 }
 
 fn ray_ellipse(radii: Point, origin: Point, direction: Point) -> Option<(f64, Point)> {
@@ -383,7 +427,7 @@ pub fn test(collider: &Collider, query: &Query) -> Option<Hit> {
             }
             let local = collider.to_local(center);
             let overlaps = match &polygon {
-                Some(polygon) => inside_polygon(polygon, local) || edge_distance(polygon, local) <= radius,
+                Some(polygon) => polygon_distance(polygon, local) <= radius,
                 None => {
                     inside_ellipse(radii, local) || length(sub(local, closest_on_ellipse(radii, local))) <= radius
                 }
@@ -415,6 +459,13 @@ pub fn run<'a>(colliders: impl IntoIterator<Item = &'a Collider>, query: &Query)
 }
 
 pub const NO_SHAPE: u32 = u32::MAX;
+pub const CUSTOM_SHAPE: u32 = 0x8000_0000;
+pub const CUSTOM_OFFSET: u32 = 0x7f_ffff;
+pub const MAX_OUTLINE_POINTS: u32 = 255;
+
+pub fn custom_shape(offset: u32, count: u32) -> u32 {
+    CUSTOM_SHAPE | (count << 23) | (offset & CUSTOM_OFFSET)
+}
 pub const NO_OBJECT: u32 = u32::MAX;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

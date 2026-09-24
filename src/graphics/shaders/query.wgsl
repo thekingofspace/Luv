@@ -28,6 +28,8 @@ struct Hits {
 @group(1) @binding(1) var<storage, read_write> hits: Hits;
 
 const MISS: f32 = -1.0;
+const PARALLEL: f32 = 1e-9;
+const FAR: f32 = 1e30;
 
 fn record(object: Object, distance: f32, position: vec2<f32>, normal: vec2<f32>) {
     let index = atomicAdd(&hits.count, 1u);
@@ -99,29 +101,94 @@ fn separated(first: vec2<f32>, second: vec2<f32>) -> bool {
     return first.y < second.x || second.y < first.x;
 }
 
+fn polygon_sdf(shape: u32, size: vec2<f32>, point: vec2<f32>) -> f32 {
+    let count = shape_range(shape).y;
+    if count < 3u {
+        return FAR;
+    }
+    var nearest = FAR;
+    var sign = 1.0;
+    var previous = shape_point(shape, count - 1u, size);
+    for (var index = 0u; index < count; index++) {
+        let current = shape_point(shape, index, size);
+        let edge = previous - current;
+        let offset = point - current;
+        let squared = dot(edge, edge);
+        var along = 0.0;
+        if squared > 0.0 {
+            along = clamp(dot(offset, edge) / squared, 0.0, 1.0);
+        }
+        let gap = offset - edge * along;
+        nearest = min(nearest, dot(gap, gap));
+        let crossing = vec3<bool>((point.y >= current.y), (point.y < previous.y), (edge.x * offset.y > edge.y * offset.x));
+        if all(crossing) || all(!crossing) {
+            sign = -sign;
+        }
+        previous = current;
+    }
+    return sign * sqrt(nearest);
+}
+
+fn segments_cross(a0: vec2<f32>, a1: vec2<f32>, b0: vec2<f32>, b1: vec2<f32>) -> bool {
+    let run = a1 - a0;
+    let span = b1 - b0;
+    let gap = b0 - a0;
+    let denominator = cross2(run, span);
+    if abs(denominator) <= PARALLEL {
+        if abs(cross2(gap, run)) > PARALLEL {
+            return false;
+        }
+        let squared = dot(run, run);
+        if squared <= 0.0 {
+            return false;
+        }
+        let start = dot(gap, run) / squared;
+        let end = start + dot(span, run) / squared;
+        return min(start, end) <= 1.0 && max(start, end) >= 0.0;
+    }
+    let along = cross2(gap, span) / denominator;
+    let across = cross2(gap, run) / denominator;
+    return along >= 0.0 && along <= 1.0 && across >= 0.0 && across <= 1.0;
+}
+
+fn inside_quad(quad: ptr<function, array<vec2<f32>, 4>>, point: vec2<f32>) -> bool {
+    var inside = false;
+    var previous = (*quad)[3];
+    for (var index = 0u; index < 4u; index++) {
+        let current = (*quad)[index];
+        let edge = previous - current;
+        let offset = point - current;
+        let crossing = vec3<bool>((point.y >= current.y), (point.y < previous.y), (edge.x * offset.y > edge.y * offset.x));
+        if all(crossing) || all(!crossing) {
+            inside = !inside;
+        }
+        previous = current;
+    }
+    return inside;
+}
+
 fn area_polygon(shape: u32, size: vec2<f32>, quad: ptr<function, array<vec2<f32>, 4>>) -> bool {
     let count = shape_range(shape).y;
     for (var index = 0u; index < count; index++) {
-        let edge = shape_point(shape, (index + 1u) % count, size) - shape_point(shape, index, size);
-        let axis = vec2<f32>(-edge.y, edge.x);
-        if axis.x == 0.0 && axis.y == 0.0 {
-            continue;
+        let start = shape_point(shape, index, size);
+        let end = shape_point(shape, (index + 1u) % count, size);
+        for (var other = 0u; other < 4u; other++) {
+            if segments_cross(start, end, (*quad)[other], (*quad)[(other + 1u) % 4u]) {
+                return true;
+            }
         }
-        if separated(project_shape(shape, count, size, axis), project_quad(quad, axis)) {
-            return false;
+    }
+    for (var index = 0u; index < count; index++) {
+        if inside_quad(quad, shape_point(shape, index, size)) {
+            return true;
         }
     }
     for (var index = 0u; index < 4u; index++) {
-        let edge = (*quad)[(index + 1u) % 4u] - (*quad)[index];
-        let axis = vec2<f32>(-edge.y, edge.x);
-        if axis.x == 0.0 && axis.y == 0.0 {
-            continue;
-        }
-        if separated(project_shape(shape, count, size, axis), project_quad(quad, axis)) {
-            return false;
+        if polygon_sdf(shape, size, (*quad)[index]) <= 0.0 {
+            return true;
         }
     }
-    return true;
+    return false;
 }
 
 fn area_ellipse(radii: vec2<f32>, quad: ptr<function, array<vec2<f32>, 4>>) -> bool {
@@ -153,12 +220,14 @@ fn area_ellipse(radii: vec2<f32>, quad: ptr<function, array<vec2<f32>, 4>>) -> b
 
 fn ray_polygon(shape: u32, size: vec2<f32>, origin: vec2<f32>, direction: vec2<f32>) -> vec3<f32> {
     let count = shape_range(shape).y;
+    if count < 3u || polygon_sdf(shape, size, origin) <= 0.0 {
+        return vec3<f32>(MISS, 0.0, 0.0);
+    }
     var area = 0.0;
     for (var index = 0u; index < count; index++) {
         area += cross2(shape_point(shape, index, size), shape_point(shape, (index + 1u) % count, size));
     }
-    var enter = -1e30;
-    var exit = 1e30;
+    var nearest = FAR;
     var normal = vec2<f32>(0.0);
     for (var index = 0u; index < count; index++) {
         let start = shape_point(shape, index, size);
@@ -172,26 +241,26 @@ fn ray_polygon(shape: u32, size: vec2<f32>, origin: vec2<f32>, direction: vec2<f
             continue;
         }
         outward = outward / magnitude;
-        let facing = dot(outward, direction);
-        let distance = dot(outward, origin - start);
-        if abs(facing) < 1e-9 {
-            if distance > 0.0 {
-                return vec3<f32>(MISS, 0.0, 0.0);
-            }
+        if dot(outward, direction) >= 0.0 {
             continue;
         }
-        let t = -distance / facing;
-        if facing < 0.0 {
-            if t > enter {
-                enter = t;
-                normal = outward;
-            }
-        } else {
-            exit = min(exit, t);
+        let denominator = cross2(direction, edge);
+        if abs(denominator) <= PARALLEL {
+            continue;
+        }
+        let gap = start - origin;
+        let along = cross2(gap, edge) / denominator;
+        let across = cross2(gap, direction) / denominator;
+        if along < 0.0 || along > 1.0 || across < 0.0 || across > 1.0 {
+            continue;
+        }
+        if along < nearest {
+            nearest = along;
+            normal = outward;
         }
     }
-    if enter <= exit && enter >= 0.0 && enter <= 1.0 {
-        return vec3<f32>(enter, normal);
+    if nearest <= 1.0 {
+        return vec3<f32>(nearest, normal);
     }
     return vec3<f32>(MISS, 0.0, 0.0);
 }

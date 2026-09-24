@@ -82,10 +82,12 @@ Function pointers that can be NULL are `Option` fields in Rust:
 | `LuvClassInfo` | `destroy` | `Option<LuvDestroy>` |
 | `LuvVulkan` | `get_instance_proc_addr` | `Option<LuvGetInstanceProcAddr>` |
 
+The `LuvApi` fields that take a function, which are `new_function`, `connect` and `schedule`, take a plain `LuvFunction` in Rust. They cannot be NULL.
+
 Everything else matches `luv.h`:
 
 - The fields of `LuvApi` are `unsafe extern "C" fn` pointers. Call them inside `unsafe`, with parentheses around the field, like `unsafe { (api.push_number)(call, 1.0) }`.
-- `LuvCall`, `LuvClass`, `LuvRegistry` and `LuvRef` have no fields. You only use them through raw pointers.
+- `LuvCall`, `LuvClass`, `LuvRegistry`, `LuvRef`, `LuvService` and `LuvTask` have no fields. You only use them through raw pointers.
 - The type aliases are `LuvFunction`, `LuvDestroy`, `LuvRegister`, `LuvRenderHook`, `LuvWriteData`, `LuvWriteTexture`, `LuvSetDrawCounts` and `LuvGetInstanceProcAddr`.
 - The mode constants like `LUV_INLINE` are `u32`. The result codes and argument kinds are `i32`.
 - Export your functions with `#[unsafe(no_mangle)]` and `extern "C"`.
@@ -106,6 +108,46 @@ static METHODS: [LuvMethod; 2] = [LuvMethod::new(c"Increment", counter_increment
 static PROPERTIES: [LuvProperty; 2] = [LuvProperty::new(c"Count", Some(counter_count), None), LuvProperty::END];
 ```
 
+## LuvValue
+
+`LuvValue` is `Copy` and has the same fields as in C. `handle` is a `*mut LuvRef`. It is what [The engine](native-c.md#the-engine) and [Members](native-c.md#members) pass in and out.
+
+| Item | Returns | Description |
+| --- | --- | --- |
+| `LuvValue::NIL` | `LuvValue` | The empty value. Start from it and set the fields yourself. |
+| `LuvValue::boolean(flag)` | `LuvValue` | A boolean. |
+| `LuvValue::number(number)` | `LuvValue` | A number. |
+| `LuvValue::text(bytes)` | `LuvValue` | A string from a byte slice. |
+| `LuvValue::buffer(bytes)` | `LuvValue` | A Luau `buffer` from a byte slice. |
+| `LuvValue::udim(x, y, z)` | `LuvValue` | A [UDim](udim.md). |
+| `LuvValue::color(r, g, b, a)` | `LuvValue` | A [Color](color.md). |
+| `LuvValue::held(handle)` | `LuvValue` | The value a `LuvRef*` holds. |
+| `value.bytes()` | `&[u8]` | The bytes of a string or buffer. Empty for any other kind. |
+| `value.as_str()` | `Option<&str>` | The bytes as text. `None` when they are not UTF-8. |
+
+`NIL`, `boolean`, `number`, `udim`, `color` and `held` are `const fn`. `text` and `buffer` borrow the slice, so keep it alive until the call returns.
+
+## Services
+
+`LuvServiceInfo` has the same three fields as in C. Build it with `c"..."` names and static lists:
+
+```rust
+static FUNCTIONS: [LuvMethod; 2] = [LuvMethod::new(c"Step", physics_step, LUV_INLINE), LuvMethod::END];
+static PROPERTIES: [LuvProperty; 2] = [
+    LuvProperty::new(c"Gravity", Some(get_gravity), Some(set_gravity)),
+    LuvProperty::END,
+];
+
+let info = LuvServiceInfo {
+    name: c"Physics".as_ptr(),
+    functions: FUNCTIONS.as_ptr(),
+    properties: PROPERTIES.as_ptr(),
+};
+let service = unsafe { (api.define_service)(registry, &info) };
+```
+
+See [Services](native-c.md#services) for what the table looks like in Luau.
+
 ## Helpers on LuvApi
 
 Each of these is an `unsafe fn`.
@@ -120,6 +162,35 @@ Each of these is an `unsafe fn`.
 | `push_str(call, text)` | nothing | Pushes a `&str` with `push_bytes`. |
 | `fail_with(call, message)` | nothing | Calls `fail` with a `&str`. Zero bytes in it are removed. |
 | `log(message)` | nothing | Calls `print` with a `&str`. Zero bytes in it are removed. |
+| `data::<T>(call)` | `Option<&mut T>` | `call_data` as your type. `None` when there is none. |
+| `value(call, index)` | `Option<LuvValue>` | `arg_value` for one argument. `None` when there is no argument there. |
+| `push(call, value)` | nothing | Calls `push_value`. |
+| `push_buffer_bytes(call, bytes)` | `bool` | Calls `push_buffer` and copies the bytes in. Returns `false` when the buffer could not be made. |
+| `read(call, target, name)` | `Option<LuvValue>` | `read_member` with a `&CStr` name. `None` when the read failed. |
+| `write(call, target, name, value)` | `i32` | `write_member` with a `&CStr` name. |
+| `call(call, target, name, args)` | `i32` | `call_member` with a slice of arguments and no results. |
+| `make(call, api, name, args)` | `*mut LuvRef` | `construct` with a slice of arguments. |
+| `send(target, name, args)` | `i32` | `post_call` with a slice of arguments. Works from any thread. |
+
+These reach the engine, so they need the thread that runs Luau. See [The game thread](native-c.md#the-game-thread).
+
+```rust
+unsafe extern "C" fn make_shape(call: *mut LuvCall) {
+    let api = api();
+    let Some(window) = (unsafe { api.value(call, 0) }) else {
+        return;
+    };
+    let renderable = unsafe { (api.get_api)(call, window.handle, c"Renderable".as_ptr()) };
+    let shape = unsafe { api.make(call, renderable, c"new", &[LuvValue::text(b"RenderableShape")]) };
+    if !shape.is_null() {
+        unsafe { api.write(call, shape, c"Size", &LuvValue::udim(64.0, 48.0, 0.0)) };
+        unsafe { (api.push_ref)(call, shape) };
+        unsafe { (api.release)(shape) };
+    }
+    unsafe { (api.release)(renderable) };
+    unsafe { (api.release)(window.handle) };
+}
+```
 
 ## Helpers on LuvRenderContext
 

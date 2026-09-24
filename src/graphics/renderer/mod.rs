@@ -307,6 +307,7 @@ struct Graphics {
     frame: wgpu::Buffer,
     instances: Grow,
     objects: Grow,
+    outlines: Grow,
     linear: wgpu::Sampler,
     nearest: wgpu::Sampler,
     comparison: wgpu::Sampler,
@@ -372,6 +373,7 @@ impl Graphics {
         let storage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
         let instances = Grow::new(device, "instances", storage, 64 * size_of::<Instance>() as u64);
         let objects = Grow::new(device, "objects", storage, 64 * size_of::<GpuObject>() as u64);
+        let outlines = Grow::new(device, "outlines", storage, 64 * size_of::<[f32; 2]>() as u64);
         let sampler = |filter: wgpu::FilterMode, compare: Option<wgpu::CompareFunction>| {
             device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("renderable sampler"),
@@ -415,6 +417,7 @@ impl Graphics {
             frame,
             instances,
             objects,
+            outlines,
             linear,
             nearest,
             comparison,
@@ -565,6 +568,10 @@ impl Graphics {
                     binding: 5,
                     resource: wgpu::BindingResource::TextureView(input),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: self.outlines.buffer.as_entire_binding(),
+                },
             ],
         });
         if let Some(post) = &mut self.post {
@@ -605,6 +612,10 @@ impl Graphics {
                 wgpu::BindGroupEntry {
                     binding: 5,
                     resource: wgpu::BindingResource::TextureView(backdrop),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: self.outlines.buffer.as_entire_binding(),
                 },
             ],
         });
@@ -792,6 +803,10 @@ struct Scene {
     shaders: Map<ShaderId, Arc<ShaderLayout>>,
     structure: bool,
     hooked: usize,
+    outlines: Vec<[f32; 2]>,
+    outline_codes: Map<ObjectId, u32>,
+    outlines_dirty: bool,
+    outlines_stale: bool,
     patched: Vec<ObjectId>,
     instances: Vec<Instance>,
     dirty: Option<Range<usize>>,
@@ -850,6 +865,10 @@ fn structural(old: &Snapshot, new: &Snapshot) -> bool {
         }
         _ => true,
     }
+}
+
+fn outlined(body: &Body) -> bool {
+    matches!(body, Body::Shape { outline: Some(_), .. })
 }
 
 fn table_entry(snapshot: &Snapshot) -> GpuObject {
@@ -948,6 +967,7 @@ impl Scene {
         }
         for id in delta.removals {
             if let Some(tracked) = self.objects.remove(&id) {
+                self.outlines_stale |= outlined(&tracked.snapshot.body);
                 self.hooked -= usize::from(tracked.snapshot.hook.is_some());
                 self.release(tracked.slot);
                 self.structure = true;
@@ -956,8 +976,10 @@ impl Scene {
         for snapshot in delta.upserts {
             let entry = table_entry(&snapshot);
             let id = snapshot.id;
+            self.outlines_stale |= outlined(&snapshot.body);
             let slot = match self.objects.get_mut(&id) {
                 Some(tracked) => {
+                    self.outlines_stale |= outlined(&tracked.snapshot.body);
                     if structural(&tracked.snapshot, &snapshot) {
                         self.structure = true;
                     } else {
@@ -1036,6 +1058,7 @@ impl Scene {
                 transform,
                 color,
                 shape,
+                outline: _,
                 stroke_color,
                 stroke,
             } => out.push(Instance {
@@ -1047,7 +1070,11 @@ impl Scene {
                 color: *color,
                 stroke_color: *stroke_color,
                 uv: [0.0, 0.0, 1.0, 1.0],
-                shape: shape.index(),
+                shape: self
+                    .outline_codes
+                    .get(&tracked.snapshot.id)
+                    .copied()
+                    .unwrap_or_else(|| shape.index()),
                 stroke: *stroke,
                 flags: 0,
                 object: slot,
@@ -1160,7 +1187,60 @@ impl Scene {
         Ok(())
     }
 
+    fn sync_outlines(&mut self) {
+        if !self.outlines_stale {
+            return;
+        }
+        self.outlines_stale = false;
+        self.intern_outlines();
+    }
+
+    fn intern_outlines(&mut self) {
+        self.outlines.clear();
+        self.outline_codes.clear();
+        let mut seen: HashMap<usize, u32> = HashMap::new();
+        let mut stamped: Vec<(ObjectId, u32, u32)> = Vec::new();
+        for tracked in self.objects.values() {
+            let Body::Shape {
+                outline: Some(outline),
+                ..
+            } = &tracked.snapshot.body
+            else {
+                continue;
+            };
+            let count = outline.len() as u32;
+            if !(3..=geometry::MAX_OUTLINE_POINTS).contains(&count) {
+                continue;
+            }
+            let key = Arc::as_ptr(outline) as *const u8 as usize;
+            let code = match seen.get(&key) {
+                Some(code) => *code,
+                None => {
+                    let offset = self.outlines.len() as u32;
+                    if offset + count > geometry::CUSTOM_OFFSET {
+                        continue;
+                    }
+                    self.outlines
+                        .extend(outline.iter().map(|point| [point[0] as f32, point[1] as f32]));
+                    let code = geometry::custom_shape(offset, count);
+                    seen.insert(key, code);
+                    code
+                }
+            };
+            self.outline_codes.insert(tracked.snapshot.id, code);
+            stamped.push((tracked.snapshot.id, tracked.slot, code));
+        }
+        for (_, slot, code) in stamped {
+            if let Some(entry) = self.table.get_mut(slot as usize) {
+                entry.shape = code;
+            }
+            self.touch_table(slot);
+        }
+        self.outlines_dirty = true;
+    }
+
     fn rebuild(&mut self, graphics: &mut Graphics) -> Result<(), AtlasFull> {
+        self.sync_outlines();
         let mut order: Vec<(f64, u64, ObjectId)> = self
             .objects
             .values()
@@ -1273,6 +1353,7 @@ impl Scene {
     }
 
     fn upload(&mut self, graphics: &mut Graphics) {
+        self.sync_outlines();
         let device = graphics.gpu.device.clone();
         let instance_bytes = (self.instances.len().max(1) * size_of::<Instance>()) as u64;
         if graphics.instances.ensure(&device, instance_bytes) {
@@ -1292,6 +1373,21 @@ impl Scene {
             );
         }
         let table_bytes = (self.table.len().max(1) * size_of::<GpuObject>()) as u64;
+        let outline_bytes = (self.outlines.len().max(1) * size_of::<[f32; 2]>()) as u64;
+        if graphics.outlines.ensure(&device, outline_bytes) {
+            graphics.groups.clear();
+            if let Some(post) = &mut graphics.post {
+                post.groups = [None, None];
+            }
+            self.outlines_dirty = true;
+        }
+        if self.outlines_dirty && !self.outlines.is_empty() {
+            graphics
+                .gpu
+                .queue
+                .write_buffer(&graphics.outlines.buffer, 0, bytemuck::cast_slice(&self.outlines));
+        }
+        self.outlines_dirty = false;
         if graphics.objects.ensure(&device, table_bytes) {
             graphics.groups.clear();
             if let Some(post) = &mut graphics.post {
@@ -1979,7 +2075,13 @@ impl Renderer {
         let state = graphics
             .query
             .get_or_insert_with(|| QueryState::new(&graphics.gpu.device));
-        state.run(&graphics.gpu, &graphics.objects.buffer, self.scene.table.len() as u32, query)
+        state.run(
+            &graphics.gpu,
+            &graphics.objects.buffer,
+            &graphics.outlines.buffer,
+            self.scene.table.len() as u32,
+            query,
+        )
     }
 
     fn render(&mut self, view: &View, frame: &FrameInfo) {

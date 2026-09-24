@@ -1,3 +1,4 @@
+mod alpha;
 mod data;
 mod object;
 mod scene;
@@ -16,7 +17,7 @@ use self::scene::Resources;
 use super::{Asset, BaseGameObject, GameObject, Shader};
 use crate::datatypes::enums::{BLEND_MODE, RESAMPLE_MODE, SHAPE_TYPE, TEXT_X_ALIGNMENT, TEXT_Y_ALIGNMENT};
 use crate::datatypes::{Color, EnumItem, UDim};
-use crate::graphics::geometry::ShapeKind;
+use crate::graphics::geometry::{Outline, ShapeKind};
 use crate::graphics::picture;
 use crate::graphics::protocol::{Blend, ObjectId};
 use crate::graphics::reflect::BindingKind;
@@ -122,6 +123,51 @@ fn hook_slot(value: &Value, property: &str, code: bool) -> Result<Option<HookSlo
     Ok(Some(HookSlot { pointer, holds }))
 }
 
+pub const MAX_OUTLINE_POINTS: usize = 255;
+
+fn read_outline(value: &Value) -> Result<Option<Outline>> {
+    let table = match value {
+        Value::Nil => return Ok(None),
+        Value::Table(table) => table,
+        other => {
+            return Err(runtime(format!(
+                "Outline must be a list of UDims or nil, got {}",
+                other.type_name()
+            )));
+        }
+    };
+    let mut points = Vec::new();
+    for entry in table.clone().sequence_values::<Value>() {
+        let entry = entry?;
+        let Value::UserData(userdata) = &entry else {
+            return Err(runtime(format!("Outline must only hold UDims, got {}", entry.type_name())));
+        };
+        let point = *userdata
+            .borrow::<UDim>()
+            .map_err(|_| runtime(format!("Outline must only hold UDims, got {}", entry.type_name())))?;
+        if !point.x.is_finite() || !point.y.is_finite() {
+            return Err(runtime("Outline points must only hold finite numbers"));
+        }
+        points.push([point.x, point.y]);
+    }
+    if points.is_empty() {
+        return Ok(None);
+    }
+    if points.len() < 3 {
+        return Err(runtime(format!(
+            "an Outline needs at least 3 points, got {}",
+            points.len()
+        )));
+    }
+    if points.len() > MAX_OUTLINE_POINTS {
+        return Err(runtime(format!(
+            "an Outline can hold at most {MAX_OUTLINE_POINTS} points, got {}",
+            points.len()
+        )));
+    }
+    Ok(Some(Outline::from(points)))
+}
+
 fn sampler_mode(value: &Value) -> Result<bool> {
     match value {
         Value::String(mode) => match mode.to_str()?.to_ascii_lowercase().as_str() {
@@ -195,6 +241,22 @@ impl Renderable {
         if let Some(scene) = self.scene.upgrade() {
             scene.spawn_decodes();
         }
+    }
+
+    fn want_mask(&self) -> Result<()> {
+        let scene = self.scene()?;
+        scene.write(self.id, |object, resources, _| {
+            if let Some(image) = &object.image {
+                let name = image
+                    .asset
+                    .borrow::<Asset>()
+                    .map(|asset| asset.path().to_owned())
+                    .unwrap_or_default();
+                resources.want_mask(image.texture, &name);
+            }
+        });
+        scene.spawn_masks();
+        Ok(())
     }
 
     fn update(&self, property: &str, kinds: &[Kind], action: impl FnOnce(&mut Object) -> Result<()>) -> Result<()> {
@@ -803,6 +865,23 @@ impl UserData for Renderable {
                 Ok(())
             })
         });
+        fields.add_field_method_get("Outline", |lua, this| {
+            let outline = this.read("Outline", SHAPE, |object| Ok(object.outline.clone()))?;
+            match outline {
+                Some(outline) => {
+                    let points: Vec<UDim> = outline.iter().map(|point| UDim::new(point[0], point[1], 0.0)).collect();
+                    Ok(Value::Table(lua.create_sequence_from(points)?))
+                }
+                None => Ok(Value::Nil),
+            }
+        });
+        fields.add_field_method_set("Outline", |_, this, value: Value| {
+            let outline = read_outline(&value)?;
+            this.update("Outline", SHAPE, |object| {
+                object.outline = outline;
+                Ok(())
+            })
+        });
         fields.add_field_method_get("StrokeColor", |_, this| {
             this.read("StrokeColor", STROKED, |object| Ok(object.stroke_color))
         });
@@ -833,6 +912,25 @@ impl UserData for Renderable {
             this.read("Image", IMAGE, |object| Ok(object.image.as_ref().map(|image| image.asset.clone())))
         });
         fields.add_field_method_set("Image", |_, this, value: AnyUserData| this.set_image(value));
+        fields.add_field_method_get("HitThreshold", |_, this| {
+            this.read("HitThreshold", IMAGE, |object| Ok(object.hit_threshold))
+        });
+        fields.add_field_method_set("HitThreshold", |_, this, value: Option<f64>| {
+            let threshold = match value {
+                Some(value) if !(0.0..=1.0).contains(&value) || !value.is_finite() => {
+                    return Err(runtime("HitThreshold must be a number between 0 and 1, or nil"));
+                }
+                other => other,
+            };
+            this.update("HitThreshold", IMAGE, |object| {
+                object.hit_threshold = threshold;
+                Ok(())
+            })?;
+            if threshold.is_some() {
+                this.want_mask()?;
+            }
+            Ok(())
+        });
         fields.add_field_method_get("ImageSize", |_, this| {
             this.read("ImageSize", IMAGE, |object| {
                 Ok(object.image.as_ref().map_or(UDim::ZERO, |image| {

@@ -1,11 +1,12 @@
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
 use mlua::AnyUserData;
 use tokio::sync::{Notify, oneshot};
 
+use super::alpha;
 use super::Renderable;
 use super::object::{Kind, Object, Slot};
 use crate::graphics::geometry::{self, Hit, Query};
@@ -22,6 +23,31 @@ use crate::runtime::Scheduler;
 use crate::window::{RenderTarget, WindowEvents, WindowId};
 
 type Pixels = (u32, u32, Vec<u8>);
+
+pub struct AlphaMask {
+    pub width: u32,
+    pub height: u32,
+    pub alpha: Vec<u8>,
+}
+
+impl AlphaMask {
+    fn build(width: u32, height: u32, rgba: &[u8]) -> AlphaMask {
+        AlphaMask {
+            width,
+            height,
+            alpha: rgba.iter().skip(3).step_by(4).copied().collect(),
+        }
+    }
+
+    pub fn at(&self, x: u32, y: u32) -> u8 {
+        if self.width == 0 || self.height == 0 {
+            return 0;
+        }
+        let x = x.min(self.width - 1) as usize;
+        let y = y.min(self.height - 1) as usize;
+        self.alpha.get(y * self.width as usize + x).copied().unwrap_or(0)
+    }
+}
 
 struct TextureEntry {
     id: TextureId,
@@ -57,6 +83,9 @@ pub struct Resources {
     uploads: Vec<Resource>,
     releases: Vec<Release>,
     decode: Vec<(TextureId, Arc<[u8]>, String)>,
+    masks: HashMap<TextureId, Arc<AlphaMask>>,
+    mask_wanted: HashSet<TextureId>,
+    mask_decode: Vec<(TextureId, Arc<[u8]>, String)>,
 }
 
 fn key(data: &Arc<[u8]>) -> usize {
@@ -110,7 +139,34 @@ impl Resources {
         }
     }
 
+    pub fn mask(&self, id: TextureId) -> Option<Arc<AlphaMask>> {
+        self.masks.get(&id).cloned()
+    }
+
+    pub fn want_mask(&mut self, id: TextureId, name: &str) {
+        if self.masks.contains_key(&id) || !self.mask_wanted.insert(id) {
+            return;
+        }
+        let Some(data) = self
+            .texture_keys
+            .get(&id)
+            .and_then(|slot| self.textures.get(slot))
+            .map(|entry| entry._data.clone())
+        else {
+            return;
+        };
+        self.mask_decode.push((id, data, name.to_owned()));
+    }
+
+    fn mask_ready(&mut self, id: TextureId, mask: AlphaMask) {
+        self.masks.insert(id, Arc::new(mask));
+    }
+
     fn texture_ready(&mut self, id: TextureId, pixels: Pixels) {
+        if self.mask_wanted.contains(&id) && !self.masks.contains_key(&id) {
+            let (width, height, rgba) = &pixels;
+            self.masks.insert(id, Arc::new(AlphaMask::build(*width, *height, rgba)));
+        }
         let Some(entry) = self.texture_keys.get(&id).and_then(|slot| self.textures.get_mut(slot)) else {
             return;
         };
@@ -457,6 +513,7 @@ pub struct Scene {
     state: RefCell<State>,
     decoding: Cell<usize>,
     decoded: Notify,
+    masking: Cell<bool>,
 }
 
 pub struct Ordering {
@@ -482,6 +539,7 @@ impl Scene {
             }),
             decoding: Cell::new(0),
             decoded: Notify::new(),
+            masking: Cell::new(false),
         })
     }
 
@@ -626,6 +684,37 @@ impl Scene {
         self.state.borrow().entries.len
     }
 
+    pub fn spawn_masks(&self) {
+        self.masking.set(true);
+        let pending = std::mem::take(&mut self.state.borrow_mut().resources.mask_decode);
+        for (id, data, name) in pending {
+            let scene = self.me.clone();
+            let reporter = self.scheduler.clone();
+            self.decoding.set(self.decoding.get() + 1);
+            self.scheduler.spawn_task(async move {
+                let label = name.clone();
+                let result = tokio::task::spawn_blocking(move || decode(&data, &label))
+                    .await
+                    .unwrap_or_else(|error| Err(error.to_string()));
+                let Some(scene) = scene.upgrade() else {
+                    return;
+                };
+                match result {
+                    Ok((width, height, rgba)) => scene
+                        .state
+                        .borrow_mut()
+                        .resources
+                        .mask_ready(id, AlphaMask::build(width, height, &rgba)),
+                    Err(error) => {
+                        reporter.report(mlua::Error::runtime(format!("cannot read the image '{name}': {error}")))
+                    }
+                }
+                scene.decoding.set(scene.decoding.get() - 1);
+                scene.decoded.notify_waiters();
+            });
+        }
+    }
+
     pub fn spawn_decodes(&self) {
         let pending = std::mem::take(&mut self.state.borrow_mut().resources.decode);
         for (id, data, name) in pending {
@@ -738,29 +827,71 @@ impl Scene {
     }
 
     pub async fn query(&self, query: Query) -> Result<Vec<Hit>, String> {
+        if self.masking.get() {
+            self.settle().await;
+        }
         self.flush();
         let (sender, receiver) = oneshot::channel();
-        if !self.send(RenderCommand::Query(query, sender)) {
-            return Ok(self.cpu_query(&query));
-        }
-        let hits = receiver
-            .await
-            .map_err(|_| "the renderer stopped before the query finished".to_owned())??;
-        if !matches!(query, Query::Ray { .. }) {
-            return Ok(hits);
-        }
+        let hits = if self.send(RenderCommand::Query(query, sender)) {
+            let hits = receiver
+                .await
+                .map_err(|_| "the renderer stopped before the query finished".to_owned())??;
+            match query {
+                Query::Ray { .. } => {
+                    let mut state = self.state.borrow_mut();
+                    hits.into_iter()
+                        .map(|hit| {
+                            state
+                                .entries
+                                .get_mut(hit.id)
+                                .and_then(|entry| entry.object.collider(hit.id))
+                                .and_then(|collider| geometry::test(&collider, &query))
+                                .unwrap_or(hit)
+                        })
+                        .collect()
+                }
+                _ => hits,
+            }
+        } else {
+            self.cpu_query(&query)
+        };
+        Ok(self.refine_alpha(&query, hits))
+    }
+
+    fn refine_alpha(&self, query: &Query, hits: Vec<Hit>) -> Vec<Hit> {
         let mut state = self.state.borrow_mut();
-        Ok(hits
-            .into_iter()
-            .map(|hit| {
-                state
-                    .entries
-                    .get_mut(hit.id)
-                    .and_then(|entry| entry.object.collider(hit.id))
-                    .and_then(|collider| geometry::test(&collider, &query))
-                    .unwrap_or(hit)
-            })
-            .collect())
+        if state.entries.ids().is_empty() {
+            return hits;
+        }
+        let mut kept = Vec::with_capacity(hits.len());
+        for hit in hits {
+            let Some(entry) = state.entries.get_mut(hit.id) else {
+                kept.push(hit);
+                continue;
+            };
+            let Some(threshold) = entry.object.hit_threshold else {
+                kept.push(hit);
+                continue;
+            };
+            let Some(image) = &entry.object.image else {
+                kept.push(hit);
+                continue;
+            };
+            let texture = image.texture;
+            let uv = entry.object.uv();
+            let Some(collider) = entry.object.collider(hit.id) else {
+                kept.push(hit);
+                continue;
+            };
+            let Some(mask) = state.resources.mask(texture) else {
+                kept.push(hit);
+                continue;
+            };
+            if let Some(hit) = alpha::refine(&mask, threshold, uv, &collider, query, hit) {
+                kept.push(hit);
+            }
+        }
+        kept
     }
 
     pub async fn capture(&self, frame: FrameInfo) -> Result<Capture, String> {

@@ -635,3 +635,211 @@ results.blocked = tostring(select(2, pcall(function() return lib.Exports end)))
     assert!(flag(&results, "released"), "the Exports table stayed alive after Destroy");
     assert!(text(&results, "blocked").contains("destroyed"));
 }
+
+#[tokio::test]
+async fn a_service_becomes_an_import_when_the_library_loads() {
+    let outcome = run_dll(
+        r#"
+local DLL = import("DLL")
+results = {}
+results.before = tostring(select(2, pcall(import, "Fixture")))
+local lib = DLL.Load(FIXTURE)
+results.listed = table.concat(lib:GetServices(), ",")
+local Fixture = import("Fixture")
+results.version = Fixture.Version()
+results.greet = Fixture.Greet("plugins")
+results.greetDefault = Fixture.Greet()
+results.level = Fixture.Level
+Fixture.Level = 12
+results.levelAfter = Fixture.Level
+results.frozen = tostring(select(2, pcall(function() Fixture.Version = 1 end)))
+results.missing = tostring(select(2, pcall(function() return Fixture.Nope end)))
+"#,
+    )
+    .await;
+    outcome.assert_clean();
+    let results: Table = outcome.global("results");
+    assert!(text(&results, "before").contains("'Fixture' cannot be imported"));
+    assert_eq!(text(&results, "listed"), "Fixture");
+    assert_eq!(number(&results, "version"), f64::from(luv::native::API_VERSION));
+    assert_eq!(text(&results, "greet"), "hello plugins");
+    assert_eq!(text(&results, "greetDefault"), "hello world");
+    assert_eq!(number(&results, "level"), 1.0);
+    assert_eq!(number(&results, "levelAfter"), 12.0);
+    assert!(text(&results, "frozen").contains("readonly"));
+    assert!(text(&results, "missing").contains("'Nope' is not a valid member of Fixture"));
+}
+
+#[tokio::test]
+async fn a_library_makes_signals_and_functions_for_luau() {
+    let outcome = run_dll(
+        r#"
+local DLL = import("DLL")
+local Process = import("Process")
+local lib = DLL.Load(FIXTURE)
+local function pause(beats)
+    for index = 1, beats do
+        Process.Heartbeat:Wait()
+    end
+end
+results = {}
+local signal = lib.Exports.make_signal()
+results.class = signal.ClassName
+results.bound = signal:IsBound("native")
+signal:Fire(21)
+pause(2)
+results.heard = lib.Exports.heard()
+results.reported = lib.Exports.call_member(signal)
+local _, found = lib.Exports.call_member(signal)
+results.found = found
+lib.Exports.release_signal()
+
+local double = lib.Exports.make_function()
+results.doubleType = typeof(double)
+results.doubled = double(20)
+
+local made = lib.Exports.imported()
+results.madeClass = made.ClassName
+"#,
+    )
+    .await;
+    outcome.assert_clean();
+    let results: Table = outcome.global("results");
+    assert_eq!(text(&results, "class"), "Signal");
+    assert!(flag(&results, "bound"));
+    assert_eq!(number(&results, "heard"), 21.0);
+    assert_eq!(number(&results, "reported"), 1.0);
+    assert!(flag(&results, "found"));
+    assert_eq!(text(&results, "doubleType"), "function");
+    assert_eq!(number(&results, "doubled"), 40.5);
+    assert_eq!(text(&results, "madeClass"), "Signal");
+}
+
+#[tokio::test]
+async fn a_library_reads_and_writes_objects_and_globals() {
+    let outcome = run_dll(
+        r#"
+local DLL = import("DLL")
+local Process = import("Process")
+local Signal = import("Signal")
+local lib = DLL.Load(FIXTURE)
+local function pause(beats)
+    for index = 1, beats do
+        Process.Heartbeat:Wait()
+    end
+end
+results = {}
+local signal = Signal.new()
+signal.Name = "before"
+local was, code = lib.Exports.members(signal)
+results.was = was
+results.code = code
+results.now = signal.Name
+
+results.setCode = select(1, lib.Exports.globals())
+local _, greeting = lib.Exports.globals()
+results.greeting = greeting
+results.global = pluginGreeting
+
+local posted, fired, offThread = lib.Exports.post_name(signal)
+pause(2)
+results.posted = posted
+results.fired = fired
+results.offThread = offThread
+results.postedName = signal.Name
+"#,
+    )
+    .await;
+    outcome.assert_clean();
+    let results: Table = outcome.global("results");
+    assert_eq!(text(&results, "was"), "before");
+    assert_eq!(number(&results, "code"), 0.0);
+    assert_eq!(text(&results, "now"), "renamed");
+    assert_eq!(number(&results, "setCode"), 0.0);
+    assert_eq!(text(&results, "greeting"), "from the plugin");
+    assert_eq!(text(&results, "global"), "from the plugin");
+    assert_eq!(number(&results, "posted"), 0.0);
+    assert_eq!(number(&results, "fired"), 0.0);
+    assert!(flag(&results, "offThread"), "a worker call should not be on the game thread");
+    assert_eq!(text(&results, "postedName"), "posted");
+}
+
+#[tokio::test]
+async fn a_library_makes_buffers_and_runs_on_a_timer() {
+    let outcome = run_dll(
+        r#"
+local DLL = import("DLL")
+local Process = import("Process")
+local lib = DLL.Load(FIXTURE)
+local function pause(beats)
+    for index = 1, beats do
+        Process.Heartbeat:Wait()
+    end
+end
+results = {}
+local samples = lib.Exports.samples(8)
+results.kind = typeof(samples)
+results.length = buffer.len(samples)
+results.first = buffer.readu8(samples, 0)
+results.last = buffer.readu8(samples, 7)
+results.empty = buffer.len(lib.Exports.samples(0))
+
+local seen = {}
+results.started = lib.Exports.start_ticks(function(count)
+    table.insert(seen, count)
+end)
+pause(6)
+results.ticks = lib.Exports.stop_ticks()
+pause(2)
+results.seen = #seen
+local after = lib.Exports.stop_ticks()
+pause(4)
+results.stopped = lib.Exports.stop_ticks() == after
+"#,
+    )
+    .await;
+    outcome.assert_clean();
+    let results: Table = outcome.global("results");
+    assert_eq!(text(&results, "kind"), "buffer");
+    assert_eq!(number(&results, "length"), 8.0);
+    assert_eq!(number(&results, "first"), 1.0);
+    assert_eq!(number(&results, "last"), 22.0);
+    assert_eq!(number(&results, "empty"), 0.0);
+    assert!(flag(&results, "started"));
+    assert!(number(&results, "ticks") >= 2.0, "ticks {}", number(&results, "ticks"));
+    assert!(number(&results, "seen") >= 2.0, "seen {}", number(&results, "seen"));
+    assert!(flag(&results, "stopped"), "the task kept running after cancel");
+}
+
+#[tokio::test]
+async fn a_library_makes_a_renderable_in_a_window() {
+    let dir = main_script(&format!(
+        "local FIXTURE = \"{}\"\n{}",
+        lua_path(&fixture()),
+        r#"
+local DLL = import("DLL")
+local Window = import("Window")
+local lib = DLL.Load(FIXTURE)
+local window = Window.new({ Title = "Native", Size = udim.new(200, 100) })
+local shape = lib.Exports.window_shape(window)
+results = {}
+results.class = shape.ClassName
+results.width = shape.Size.X
+results.height = shape.Size.Y
+results.listed = #window:GetAPI("Renderable").GetRenderables()
+window:Close()
+"#
+    ));
+    let project = Project::load(dir.path()).unwrap();
+    let headless = Arc::new(HeadlessWindows::new());
+    let outcome = run_with(Arc::new(project.source_vfs()), "src/main.luau", move |builder| {
+        builder.windows(headless)
+    })
+    .await;
+    outcome.assert_clean();
+    let results: Table = outcome.global("results");
+    assert_eq!(text(&results, "class"), "RenderableShape");
+    assert_eq!(number(&results, "width"), 64.0);
+    assert_eq!(number(&results, "height"), 48.0);
+    assert_eq!(number(&results, "listed"), 1.0);
+}

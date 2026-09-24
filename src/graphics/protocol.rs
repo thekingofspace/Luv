@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tokio::sync::oneshot;
 
-use super::geometry::{Collider, Hit, Query, ShapeKind};
+use super::geometry::{Collider, Hit, Outline, Query, ShapeKind};
 use super::reflect::ShaderLayout;
 use super::text::PlacedGlyph;
 
@@ -47,8 +47,9 @@ pub struct Transform {
 }
 
 impl Transform {
-    pub fn collider(&self, id: ObjectId, shape: ShapeKind) -> Collider {
+    pub fn collider(&self, id: ObjectId, shape: ShapeKind, outline: Option<Outline>) -> Collider {
         Collider {
+            outline,
             id,
             position: self.position,
             size: self.size,
@@ -83,6 +84,7 @@ pub enum Body {
         transform: Transform,
         color: [f32; 4],
         shape: ShapeKind,
+        outline: Option<Outline>,
         stroke_color: [f32; 4],
         stroke: f32,
     },
@@ -107,9 +109,14 @@ impl Body {
     pub fn collider(&self, id: ObjectId) -> Option<Collider> {
         match self {
             Body::Custom { .. } | Body::Post { .. } => None,
-            Body::Shape { transform, shape, .. } => Some(transform.collider(id, *shape)),
+            Body::Shape {
+                transform,
+                shape,
+                outline,
+                ..
+            } => Some(transform.collider(id, *shape, outline.clone())),
             Body::Image { transform, .. } | Body::Text { transform, .. } => {
-                Some(transform.collider(id, ShapeKind::Rectangle))
+                Some(transform.collider(id, ShapeKind::Rectangle, None))
             }
         }
     }

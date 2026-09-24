@@ -41,6 +41,7 @@ Renderables that use the same Asset object share one texture on the GPU.
 | `ResampleMode` | [ResampleMode](enums.md#resamplemode) | `enum.ResampleMode.Smooth` | Smooth blends pixels when the image is scaled. Pixelated keeps hard pixel edges. |
 | `FlipX` | `boolean` | `false` | Mirrors the image from left to right. |
 | `FlipY` | `boolean` | `false` | Mirrors the image from top to bottom. |
+| `HitThreshold` | `number?` | `nil` | How solid a pixel must be for a query to find it. See [Clear pixels and queries](#clear-pixels-and-queries). |
 
 `Image` only takes an Asset. Other objects raise `Image must be an Asset`.
 
@@ -76,6 +77,39 @@ end)
 ```
 
 Use `enum.ResampleMode.Pixelated` for pixel art. Set `FlipX` to make a sprite face the other way.
+
+## Clear pixels and queries
+
+Without `HitThreshold` a query finds the whole box of the image, clear pixels and all.
+
+Set `HitThreshold` to a number from 0 to 1 and queries read the image instead. A pixel counts only when its alpha is at least the threshold. `0.5` means a pixel that is at least half solid.
+
+```luau
+local hero = Renderable.new("RenderableImage", {
+	Image = Asset.Load("hero.png"),
+	Size = udim.new(64, 64),
+	HitThreshold = 0.5,
+})
+```
+
+It follows `OffsetPosition`, `OffsetSize`, `FlipX` and `FlipY`, so one frame of a sheet is read and not the whole file. Move `OffsetPosition` to the next frame and the queries move with it.
+
+Each query reads the image its own way:
+
+| Query | What it does |
+| --- | --- |
+| [QueryPoint](renderable-api.md#querypoint) | Reads the one pixel under the point. |
+| [Raycast](renderable-api.md#raycast) and [RaycastAll](renderable-api.md#raycastall) | Walks the ray through the image a pixel at a time and stops at the first solid one. `Position` and `Distance` are that pixel. `Normal` stays the edge of the box the ray came in through. |
+| [QueryRadius](renderable-api.md#queryradius) | Looks for a solid pixel inside the circle. |
+| [QueryArea](renderable-api.md#queryarea) | Looks for a solid pixel inside the rectangle. |
+
+Notes:
+
+- luv reads the image file a second time to keep its alpha. That costs one byte per pixel and only images with a `HitThreshold` pay it.
+- The first query after you set it waits for that read. It yields the calling coroutine like every other query.
+- Set it back to `nil` to go back to the whole box.
+- A number outside 0 to 1 raises `HitThreshold must be a number between 0 and 1, or nil`.
+- A threshold of `0` still needs an alpha above 0, so fully clear pixels never count.
 
 ## Formats
 
@@ -120,6 +154,7 @@ A file luv cannot read raises an error when you set `Image`:
 | `ResampleMode` | [ResampleMode](enums.md#resamplemode) | `enum.ResampleMode.Smooth` | How the image is scaled. |
 | `FlipX` | `boolean` | `false` | Mirrors the image from left to right. |
 | `FlipY` | `boolean` | `false` | Mirrors the image from top to bottom. |
+| `HitThreshold` | `number?` | `nil` | How solid a pixel must be for a query to find it. |
 
 It also takes the [shared fields](renderable.md#shared-fields) and the [placement fields](renderable.md#placement-fields). Without a `Size`, the image gets the size of its file.
 

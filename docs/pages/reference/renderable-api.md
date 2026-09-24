@@ -19,10 +19,10 @@ Positions and sizes are in window pixels, the same units as the window size. The
 
 The query functions find renderables by their shape:
 
-- A [RenderableShape](renderableshape.md) counts only inside its outline. A Circle counts only inside the circle.
-- A [RenderableImage](renderableimage.md) or a [RenderableText](renderabletext.md) counts as its whole box.
+- A [RenderableShape](renderableshape.md) counts only inside its outline. A Circle counts only inside the circle. An [Outline](renderableshape.md#your-own-outline) you set yourself is used as you gave it, dents and all.
+- A [RenderableImage](renderableimage.md) or a [RenderableText](renderabletext.md) counts as its whole box. An image with a [HitThreshold](renderableimage.md#clear-pixels-and-queries) counts only its solid pixels.
 - Position, Size, AnchorPoint and Rotation all count. A point on the edge counts as inside.
-- Color, transparency, stroke and shaders do not matter. A fully transparent shape is still found.
+- Color, stroke and shaders do not matter. A fully transparent shape is still found. Only a HitThreshold on an image looks at transparency.
 
 Queries never find:
 

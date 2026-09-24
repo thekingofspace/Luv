@@ -29,7 +29,7 @@ my-game/
 | `native/luv.h` | The C header for native plugins. |
 | `native/luv.rs` | The same API for Rust plugins. |
 | `src/main.luau` | The first script that runs. You can change it in `build.toml`. |
-| `types.d.luau` | Type info for your editor. It is never packed into the game. |
+| `types.d.luau` | Type info for your editor. luv writes it from the engine types and every plugin type file. It is never packed into the game. See [How luv builds it](editor-setup.md#how-luv-builds-it). |
 
 ## Where scripts can live
 
@@ -82,3 +82,5 @@ When you build, luv packs every file in the project except these:
 ## Updating the project files
 
 Run `luv init` again inside an existing project after you update luv. It refreshes `types.d.luau`, `native/luv.h` and `native/luv.rs`. It never touches `build.toml`, your scripts or your assets.
+
+`types.d.luau` is built from nothing each time, out of the engine types and every `.d.luau` file in a `native` folder. `luv test` and `luv build` do the same, and [luv types](command-line.md#luv-types) does only that step.

@@ -42,7 +42,43 @@ local bytes = fx.Exports.blip(760, 0.08, 600, 0.4, 0.2)
 
 See [How exports look in Luau](native-c.md#how-exports-look-in-luau) for methods, properties and operators. After [Destroy](#destroy), reading `Exports` errors.
 
+## Services
+
+A library can also add [services](native-c.md#services). A service is not in `Exports`. It is a name for [import](globals.md#import), next to the libraries luv ships with.
+
+The names arrive when `DLL.Load` finishes, so load the library first.
+
+```luau
+local DLL = import("DLL")
+
+local physics = DLL.Load("./physics")
+print(physics:GetServices())
+local Physics = import("Physics")
+Physics.Gravity = 9.81
+```
+
+`DLL.Load` errors with `'Net' cannot be a service because luv already imports a library with that name` when a service name is taken. Loading the same library again replaces its services with the new tables.
+
+Services stay after [Destroy](#destroy). Their functions with `LUV_WORKER` then error like other members.
+
 ## Methods
+
+### GetServices
+
+```luau
+library:GetServices(): { string }
+```
+
+Returns the names of the services this library added, in the order it defined them. It is empty for a library with no services.
+
+```luau
+local DLL = import("DLL")
+
+local physics = DLL.Load("./physics")
+for _, name in physics:GetServices() do
+	print(name, import(name))
+end
+```
 
 ### HasSymbol
 
@@ -123,7 +159,7 @@ library:Destroy()
 
 Stops the thread of the library and lets go of the `Exports` table, so its functions and classes are collected instead of living until the Library itself is. Calls that already wait still finish. After this:
 
-- `Exports`, `HasSymbol`, `GetSymbol` and `GetFunction` error with `Library 'mathlib' has been destroyed`.
+- `Exports`, `GetServices`, `HasSymbol`, `GetSymbol` and `GetFunction` error with `Library 'mathlib' has been destroyed`.
 - Its functions error with `cannot call add because its library was unloaded`. Functions made with `Parallel = true` keep working.
 - Plugin members with `LUV_WORKER` error the same way. Members with `LUV_INLINE` and `LUV_PARALLEL` keep working.
 

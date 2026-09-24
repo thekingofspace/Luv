@@ -539,6 +539,227 @@ static void export_listen(LuvCall* call) {
 #endif
 }
 
+static LuvRef* held_signal = NULL;
+static LuvRef* held_handler = NULL;
+static LuvTask* held_task = NULL;
+static double heard_number = 0;
+static int32_t tick_count = 0;
+static double service_level = 1;
+
+static void on_signal(LuvCall* call) {
+    heard_number = api->opt_number(call, 0, 0);
+}
+
+static void export_make_signal(LuvCall* call) {
+    if (held_signal) {
+        api->release(held_signal);
+        held_signal = NULL;
+    }
+    held_signal = api->new_signal(call, "NativeSignal");
+    if (!held_signal) {
+        api->fail(call, "the signal could not be made");
+        return;
+    }
+    api->connect(call, held_signal, "native", on_signal, NULL, LUV_INLINE);
+    api->push_ref(call, held_signal);
+}
+
+static void export_heard(LuvCall* call) {
+    api->push_number(call, heard_number);
+}
+
+static void doubler(LuvCall* call) {
+    double value = api->check_number(call, 0);
+    double* step = (double*)api->call_data(call);
+    api->push_number(call, value * 2 + (step ? *step : 0));
+}
+
+static double doubler_step = 0.5;
+
+static void export_make_function(LuvCall* call) {
+    LuvRef* made = api->new_function(call, "doubler", doubler, &doubler_step, LUV_INLINE);
+    api->push_ref(call, made);
+    api->release(made);
+}
+
+static void export_members(LuvCall* call) {
+    LuvValue target = luv_nil();
+    if (api->arg_value(call, 0, &target) != LUV_OK || !target.handle) {
+        api->fail(call, "members needs an object");
+        return;
+    }
+    LuvValue name = luv_nil();
+    if (api->read_member(call, target.handle, "Name", &name) == LUV_OK) {
+        api->push_bytes(call, name.data, name.length);
+    } else {
+        api->push_nil(call);
+    }
+    LuvValue renamed = luv_bytes("renamed", 7);
+    api->push_number(call, api->write_member(call, target.handle, "Name", &renamed));
+    api->release(target.handle);
+}
+
+static void export_call_member(LuvCall* call) {
+    LuvValue target = luv_nil();
+    if (api->arg_value(call, 0, &target) != LUV_OK || !target.handle) {
+        api->fail(call, "call_member needs an object");
+        return;
+    }
+    LuvValue id = luv_bytes("native", 6);
+    LuvValue results[2];
+    int32_t written = api->call_member(call, target.handle, "IsBound", &id, 1, results, 2);
+    api->push_number(call, written);
+    api->push_boolean(call, written > 0 && results[0].numbers[0] != 0);
+    api->release(target.handle);
+}
+
+static void export_samples(LuvCall* call) {
+    double asked = api->check_number(call, 0);
+    if (asked < 0) {
+        asked = 0;
+    }
+    uint64_t count = (uint64_t)asked;
+    uint8_t* room = (uint8_t*)api->push_buffer(call, count);
+    if (!room) {
+        return;
+    }
+    for (uint64_t index = 0; index < count; index++) {
+        room[index] = (uint8_t)(index * 3 + 1);
+    }
+}
+
+static void export_globals(LuvCall* call) {
+    LuvValue text = luv_bytes("from the plugin", 15);
+    api->push_number(call, api->set_global(call, "pluginGreeting", &text));
+    LuvRef* found = api->get_global(call, "pluginGreeting");
+    api->push_ref(call, found);
+    api->release(found);
+}
+
+static void export_imported(LuvCall* call) {
+    LuvRef* signals = api->get_import(call, "Signal");
+    if (!signals) {
+        api->fail(call, "Signal could not be imported");
+        return;
+    }
+    LuvRef* made = api->construct(call, signals, "new", NULL, 0);
+    api->push_ref(call, made);
+    api->release(made);
+    api->release(signals);
+}
+
+static void export_window_shape(LuvCall* call) {
+    LuvValue window = luv_nil();
+    if (api->arg_value(call, 0, &window) != LUV_OK || !window.handle) {
+        api->fail(call, "window_shape needs a window");
+        return;
+    }
+    LuvRef* renderable = api->get_api(call, window.handle, "Renderable");
+    if (!renderable) {
+        api->release(window.handle);
+        return;
+    }
+    LuvValue arguments[1];
+    arguments[0] = luv_bytes("RenderableShape", 15);
+    LuvRef* made = api->construct(call, renderable, "new", arguments, 1);
+    if (made) {
+        LuvValue size = luv_udim(64, 48, 0);
+        api->write_member(call, made, "Size", &size);
+        api->push_ref(call, made);
+        api->release(made);
+    } else {
+        api->push_nil(call);
+    }
+    api->release(renderable);
+    api->release(window.handle);
+}
+
+static void on_tick(LuvCall* call) {
+    (void)call;
+    tick_count++;
+    if (!held_handler) {
+        return;
+    }
+    LuvCall* event = api->begin_event(held_handler);
+    api->push_number(event, tick_count);
+    api->send_event(event);
+}
+
+static void export_start_ticks(LuvCall* call) {
+    if (held_handler) {
+        api->release(held_handler);
+        held_handler = NULL;
+    }
+    held_handler = api->retain(call, 0);
+    tick_count = 0;
+    held_task = api->schedule(call, "fixture ticks", on_tick, NULL, 0.002, LUV_INLINE);
+    api->push_boolean(call, held_task != NULL);
+}
+
+static void export_stop_ticks(LuvCall* call) {
+    if (held_task) {
+        api->cancel(held_task);
+        held_task = NULL;
+    }
+    if (held_handler) {
+        api->release(held_handler);
+        held_handler = NULL;
+    }
+    api->push_number(call, tick_count);
+}
+
+static void export_post_name(LuvCall* call) {
+    LuvValue target = luv_nil();
+    if (api->arg_value(call, 0, &target) != LUV_OK || !target.handle) {
+        api->fail(call, "post_name needs an object");
+        return;
+    }
+    LuvValue name = luv_bytes("posted", 6);
+    api->push_number(call, api->post_write(target.handle, "Name", &name));
+    LuvValue nothing = luv_nil();
+    api->push_number(call, api->post_call(target.handle, "Fire", &nothing, 1));
+    api->push_boolean(call, api->on_game_thread(call) == 0);
+    api->release(target.handle);
+}
+
+static void export_release_signal(LuvCall* call) {
+    (void)call;
+    if (held_signal) {
+        api->release(held_signal);
+        held_signal = NULL;
+    }
+}
+
+static void service_version(LuvCall* call) {
+    api->push_number(call, LUV_API_VERSION);
+}
+
+static void service_greet(LuvCall* call) {
+    static char text[128];
+    const char* who = api->opt_string(call, 0, "world", NULL);
+    snprintf(text, sizeof(text), "hello %s", who);
+    api->push_string(call, text);
+}
+
+static void service_level_get(LuvCall* call) {
+    api->push_number(call, service_level);
+}
+
+static void service_level_set(LuvCall* call) {
+    service_level = api->check_number(call, 0);
+}
+
+static const LuvMethod service_functions[] = {
+    {"Version", service_version, LUV_INLINE},
+    {"Greet", service_greet, LUV_INLINE},
+    {0},
+};
+
+static const LuvProperty service_properties[] = {
+    {"Level", service_level_get, service_level_set},
+    {0},
+};
+
 static const LuvMethod exported[] = {
     {"version", export_version, LUV_INLINE},
     {"inline_thread", export_inline_thread, LUV_INLINE},
@@ -549,6 +770,19 @@ static const LuvMethod exported[] = {
     {"slow_add", export_slow_add, LUV_WORKER},
     {"class_of", export_class_of, LUV_INLINE},
     {"listen", export_listen, LUV_WORKER},
+    {"make_signal", export_make_signal, LUV_INLINE},
+    {"heard", export_heard, LUV_INLINE},
+    {"release_signal", export_release_signal, LUV_INLINE},
+    {"make_function", export_make_function, LUV_INLINE},
+    {"members", export_members, LUV_INLINE},
+    {"call_member", export_call_member, LUV_INLINE},
+    {"samples", export_samples, LUV_INLINE},
+    {"globals", export_globals, LUV_INLINE},
+    {"imported", export_imported, LUV_INLINE},
+    {"window_shape", export_window_shape, LUV_INLINE},
+    {"start_ticks", export_start_ticks, LUV_INLINE},
+    {"stop_ticks", export_stop_ticks, LUV_INLINE},
+    {"post_name", export_post_name, LUV_WORKER},
     {0},
 };
 
@@ -561,6 +795,8 @@ LUV_EXPORT int32_t luv_register(const LuvApi* given, LuvRegistry* registry) {
     LuvClassInfo counter = {"Counter", sizeof(Counter), counter_destroy, counter_methods, counter_properties, counter_statics, NULL};
     vec3_class = api->define_class(registry, &vec3);
     counter_class = api->define_class(registry, &counter);
+    LuvServiceInfo fixture = {"Fixture", service_functions, service_properties};
+    api->define_service(registry, &fixture);
     for (const LuvMethod* function = exported; function->name; function++) {
         api->define_function(registry, function);
     }

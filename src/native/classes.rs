@@ -1,4 +1,5 @@
 use std::any::TypeId;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::io::Write;
@@ -12,26 +13,28 @@ use mlua::{
 };
 use tokio::sync::{mpsc, oneshot};
 
+use super::host::{self, RawValue, Task};
 use super::library::{Job, LibraryShared};
 use super::memory::{Block, Hold, Pointer};
 use crate::datatypes::{Color, UDim};
 use crate::runtime::Scheduler;
 
-pub const API_VERSION: u32 = 1;
+pub const API_VERSION: u32 = 2;
 const OK: i32 = 0;
 const INVALID: i32 = -4;
-const INLINE: u32 = 1;
-const PARALLEL: u32 = 2;
-const KIND_NONE: i32 = -1;
-const KIND_NIL: i32 = 0;
-const KIND_BOOLEAN: i32 = 1;
-const KIND_NUMBER: i32 = 2;
-const KIND_STRING: i32 = 3;
-const KIND_UDIM: i32 = 4;
-const KIND_COLOR: i32 = 5;
-const KIND_OBJECT: i32 = 6;
-const KIND_POINTER: i32 = 7;
-const KIND_VALUE: i32 = 8;
+pub(super) const INLINE: u32 = 1;
+pub(super) const PARALLEL: u32 = 2;
+pub(super) const KIND_NONE: i32 = -1;
+pub(super) const KIND_NIL: i32 = 0;
+pub(super) const KIND_BOOLEAN: i32 = 1;
+pub(super) const KIND_NUMBER: i32 = 2;
+pub(super) const KIND_STRING: i32 = 3;
+pub(super) const KIND_UDIM: i32 = 4;
+pub(super) const KIND_COLOR: i32 = 5;
+pub(super) const KIND_OBJECT: i32 = 6;
+pub(super) const KIND_POINTER: i32 = 7;
+pub(super) const KIND_VALUE: i32 = 8;
+pub(super) const KIND_BUFFER: i32 = 9;
 const SLOTS: usize = 64;
 const MAX_MEMBERS: usize = 4096;
 const MAX_OBJECT_SIZE: u64 = 1 << 30;
@@ -109,15 +112,22 @@ pub struct RawClassInfo {
     static_properties: *const RawProperty,
 }
 
+#[repr(C)]
+pub struct RawServiceInfo {
+    name: *const c_char,
+    functions: *const RawMethod,
+    properties: *const RawProperty,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Mode {
+pub(super) enum Mode {
     Worker,
     Inline,
     Parallel,
 }
 
 impl Mode {
-    fn from_flags(flags: u32) -> Mode {
+    pub(super) fn from_flags(flags: u32) -> Mode {
         if flags & PARALLEL != 0 {
             Mode::Parallel
         } else if flags & INLINE != 0 {
@@ -133,6 +143,31 @@ pub struct Member {
     label: Arc<str>,
     function: RawFunction,
     mode: Mode,
+}
+
+thread_local! {
+    static STATES: RefCell<Vec<Lua>> = const { RefCell::new(Vec::new()) };
+}
+
+pub(super) struct Standing;
+
+impl Standing {
+    pub(super) fn enter(lua: &Lua) -> Standing {
+        STATES.with(|states| states.borrow_mut().push(lua.clone()));
+        Standing
+    }
+}
+
+impl Drop for Standing {
+    fn drop(&mut self) {
+        STATES.with(|states| {
+            states.borrow_mut().pop();
+        });
+    }
+}
+
+pub(super) fn current() -> Option<Lua> {
+    STATES.with(|states| states.borrow().last().cloned())
 }
 
 #[derive(Clone)]
@@ -297,6 +332,7 @@ struct ClassHost {
     slots: Vec<SlotEntry>,
     values: HashMap<u64, (Value, usize)>,
     events: Option<mpsc::UnboundedSender<Event>>,
+    services: HashMap<String, Table>,
 }
 
 fn with_host<R>(lua: &Lua, action: impl FnOnce(&mut ClassHost) -> R) -> R {
@@ -375,9 +411,15 @@ fn wrap(lua: &Lua, object: Arc<ObjectData>) -> Result<AnyUserData> {
 pub enum Event {
     Call(u64, Vec<Out>),
     Release(u64),
+    Method(u64, String, Vec<Out>),
+    Assign(u64, String, Out),
 }
 
-fn events(lua: &Lua) -> Result<mpsc::UnboundedSender<Event>> {
+pub(super) fn held(lua: &Lua, id: u64) -> Option<Value> {
+    with_host(lua, |host| host.values.get(&id).map(|(value, _)| value.clone()))
+}
+
+pub(super) fn events(lua: &Lua) -> Result<mpsc::UnboundedSender<Event>> {
     if let Some(sender) = with_host(lua, |host| host.events.clone()) {
         return Ok(sender);
     }
@@ -403,7 +445,7 @@ fn deliver(lua: &Lua, event: Event) -> Result<()> {
             Ok(())
         }
         Event::Call(id, outputs) => {
-            let Some(target) = with_host(lua, |host| host.values.get(&id).map(|(value, _)| value.clone())) else {
+            let Some(target) = held(lua, id) else {
                 return Ok(());
             };
             let Value::Function(function) = target else {
@@ -419,17 +461,39 @@ fn deliver(lua: &Lua, event: Event) -> Result<()> {
             Scheduler::get(lua)?.spawn(lua, function, args);
             Ok(())
         }
+        Event::Method(id, name, outputs) => {
+            let Some(target) = held(lua, id) else {
+                return Ok(());
+            };
+            let mut args = MultiValue::new();
+            args.push_back(target.clone());
+            for output in outputs {
+                args.push_back(convert(lua, output, &[], None)?);
+            }
+            let Value::Function(function) = super::host::field(&target, &name)? else {
+                return Err(runtime(format!("{name} is not a method of a {}", target.type_name())));
+            };
+            Scheduler::get(lua)?.spawn(lua, function, args);
+            Ok(())
+        }
+        Event::Assign(id, name, output) => {
+            let Some(target) = held(lua, id) else {
+                return Ok(());
+            };
+            let value = convert(lua, output, &[], None)?;
+            super::host::assign(&target, &name, value)
+        }
     }
 }
 
-fn register_value(lua: &Lua, value: Value) -> Result<u64> {
+pub(super) fn register_value(lua: &Lua, value: Value) -> Result<u64> {
     events(lua)?;
     let id = NEXT_VALUE.fetch_add(1, Ordering::Relaxed);
     with_host(lua, |host| host.values.insert(id, (value, 1)));
     Ok(id)
 }
 
-fn adjust(lua: &Lua, id: u64, retain: bool) {
+pub(super) fn adjust(lua: &Lua, id: u64, retain: bool) {
     let removed = with_host(lua, |host| {
         let entry = host.values.get_mut(&id)?;
         if retain {
@@ -442,6 +506,7 @@ fn adjust(lua: &Lua, id: u64, retain: bool) {
     drop(removed);
 }
 
+#[derive(Clone)]
 pub enum Arg {
     Nil,
     Boolean(bool),
@@ -484,11 +549,13 @@ impl Arg {
     }
 }
 
+#[derive(Clone)]
 pub enum Out {
     Nil,
     Boolean(bool),
     Number(f64),
     Text(Vec<u8>),
+    Bytes(Vec<u8>),
     UDim([f64; 3]),
     Color([f64; 4]),
     Object(Arc<ObjectData>),
@@ -499,19 +566,22 @@ pub enum Out {
 }
 
 pub struct Call {
-    label: Arc<str>,
+    pub(super) label: Arc<str>,
     this: Option<Arc<ObjectData>>,
-    arguments: Vec<Arg>,
-    results: Vec<Out>,
+    pub(super) arguments: Vec<Arg>,
+    pub(super) results: Vec<Out>,
     error: Option<String>,
-    retained: Vec<u64>,
-    events: Option<mpsc::UnboundedSender<Event>>,
+    pub(super) retained: Vec<u64>,
+    pub(super) events: Option<mpsc::UnboundedSender<Event>>,
     target: Option<u64>,
     _holds: Vec<Hold>,
+    pub(super) data: usize,
+    pub(super) scratch: Vec<Vec<u8>>,
+    pub(super) library: Option<Arc<LibraryShared>>,
 }
 
 impl Call {
-    fn argument(&self, index: i32) -> Option<&Arg> {
+    pub(super) fn argument(&self, index: i32) -> Option<&Arg> {
         usize::try_from(index).ok().and_then(|index| self.arguments.get(index))
     }
 
@@ -523,10 +593,20 @@ impl Call {
         self.error = Some(format!("argument #{} must be {expected}, got {got}", index.saturating_add(1)));
     }
 
-    fn fail(&mut self, message: String) {
+    pub(super) fn fail(&mut self, message: String) {
         if self.error.is_none() {
             self.error = Some(message);
         }
+    }
+
+    pub(super) fn keep(&mut self, bytes: Vec<u8>) -> (*const c_void, u64) {
+        let length = bytes.len() as u64;
+        self.scratch.push(bytes);
+        let stored = self
+            .scratch
+            .last()
+            .unwrap_or_else(|| unreachable!("the bytes were just stored"));
+        (stored.as_ptr().cast(), length)
     }
 }
 
@@ -571,7 +651,13 @@ fn capture(lua: &Lua, value: &Value, registered: &mut Vec<u64>, holds: &mut Vec<
     })
 }
 
-fn prepare(lua: &Lua, label: &Arc<str>, this: Option<Arc<ObjectData>>, values: &[Value]) -> Result<Call> {
+pub(super) fn prepare(
+    lua: &Lua,
+    label: &Arc<str>,
+    library: Option<Arc<LibraryShared>>,
+    this: Option<Arc<ObjectData>>,
+    values: &[Value],
+) -> Result<Call> {
     let mut registered = Vec::new();
     let mut holds = Vec::new();
     let mut arguments = Vec::with_capacity(values.len());
@@ -586,7 +672,6 @@ fn prepare(lua: &Lua, label: &Arc<str>, this: Option<Arc<ObjectData>>, values: &
             }
         }
     }
-    let events = if registered.is_empty() { None } else { Some(events(lua)?) };
     Ok(Call {
         label: label.clone(),
         this,
@@ -594,18 +679,22 @@ fn prepare(lua: &Lua, label: &Arc<str>, this: Option<Arc<ObjectData>>, values: &
         results: Vec::new(),
         error: None,
         retained: Vec::new(),
-        events,
+        events: Some(events(lua)?),
         target: None,
         _holds: holds,
+        data: 0,
+        scratch: Vec::new(),
+        library,
     })
 }
 
-fn convert(lua: &Lua, output: Out, values: &[Value], this: Option<&Value>) -> Result<Value> {
+pub(super) fn convert(lua: &Lua, output: Out, values: &[Value], this: Option<&Value>) -> Result<Value> {
     Ok(match output {
         Out::Nil => Value::Nil,
         Out::Boolean(flag) => Value::Boolean(flag),
         Out::Number(number) => Value::Number(number),
         Out::Text(bytes) => Value::String(lua.create_string(bytes)?),
+        Out::Bytes(bytes) => Value::Buffer(lua.create_buffer(bytes)?),
         Out::UDim([x, y, z]) => Value::UserData(lua.create_userdata(UDim::new(x, y, z))?),
         Out::Color([r, g, b, a]) => Value::UserData(lua.create_userdata(Color::new(r, g, b, a))?),
         Out::Object(object) => Value::UserData(wrap(lua, object)?),
@@ -617,7 +706,7 @@ fn convert(lua: &Lua, output: Out, values: &[Value], this: Option<&Value>) -> Re
     })
 }
 
-fn finish(lua: &Lua, call: Call, values: &[Value], this: Option<&Value>) -> Result<MultiValue> {
+pub(super) fn finish(lua: &Lua, call: Call, values: &[Value], this: Option<&Value>) -> Result<MultiValue> {
     let Call {
         label,
         arguments,
@@ -647,13 +736,17 @@ fn finish(lua: &Lua, call: Call, values: &[Value], this: Option<&Value>) -> Resu
 fn invoke(
     lua: &Lua,
     label: &Arc<str>,
+    library: Option<Arc<LibraryShared>>,
     function: RawFunction,
     this: Option<Arc<ObjectData>>,
     values: &[Value],
     this_value: Option<&Value>,
 ) -> Result<MultiValue> {
-    let mut call = prepare(lua, label, this, values)?;
-    unsafe { function(&mut call) };
+    let mut call = prepare(lua, label, library, this, values)?;
+    {
+        let _standing = Standing::enter(lua);
+        unsafe { function(&mut call) };
+    }
     finish(lua, call, values, this_value)
 }
 
@@ -661,7 +754,7 @@ fn unloaded(label: &str) -> mlua::Error {
     runtime(format!("cannot call {label} because its library was unloaded"))
 }
 
-async fn dispatch(library: Arc<LibraryShared>, function: RawFunction, mode: Mode, call: Call) -> Result<Call> {
+pub(super) async fn dispatch(library: Arc<LibraryShared>, function: RawFunction, mode: Mode, call: Call) -> Result<Call> {
     let label = call.label.clone();
     let (reply, answer) = oneshot::channel();
     let task = move || {
@@ -715,7 +808,15 @@ fn member_function(lua: &Lua, binding: Binding, member: Member) -> Result<Functi
         return lua.create_function(move |lua, args: MultiValue| {
             let values: Vec<Value> = args.into_iter().collect();
             let (this, rest, this_value) = binding.split(&member.label, &values)?;
-            invoke(lua, &member.label, member.function, this, rest, this_value)
+            invoke(
+                lua,
+                &member.label,
+                Some(binding.library()),
+                member.function,
+                this,
+                rest,
+                this_value,
+            )
         });
     }
     lua.create_async_function(move |lua, args: MultiValue| {
@@ -724,8 +825,9 @@ fn member_function(lua: &Lua, binding: Binding, member: Member) -> Result<Functi
         async move {
             let values: Vec<Value> = args.into_iter().collect();
             let (this, rest, this_value) = binding.split(&member.label, &values)?;
-            let call = prepare(&lua, &member.label, this, rest)?;
-            let call = dispatch(binding.library(), member.function, member.mode, call).await?;
+            let library = binding.library();
+            let call = prepare(&lua, &member.label, Some(library.clone()), this, rest)?;
+            let call = dispatch(library, member.function, member.mode, call).await?;
             finish(&lua, call, rest, this_value)
         }
     })
@@ -754,7 +856,7 @@ fn metamethod(lua: &Lua, slot: usize, name: &'static str, args: MultiValue) -> R
         _ => {}
     }
     if let Some(member) = class.operators.get(name) {
-        return invoke(lua, &member.label, member.function, None, &values, None);
+        return invoke(lua, &member.label, Some(class.library()), member.function, None, &values, None);
     }
     match name {
         "__tostring" => Ok(single(Value::String(lua.create_string(&class.name)?))),
@@ -784,11 +886,11 @@ fn index(lua: &Lua, class: &Arc<ClassShared>, methods: &Table, values: &[Value])
                 .get
                 .ok_or_else(|| runtime(format!("{} cannot be read", property.label)))?;
             let this = object_value(&object);
-            return invoke(lua, &property.label, getter, this, &[], Some(&object));
+            return invoke(lua, &property.label, Some(class.library()), getter, this, &[], Some(&object));
         }
     }
     if let Some(member) = class.operators.get("__index") {
-        return invoke(lua, &member.label, member.function, None, values, None);
+        return invoke(lua, &member.label, Some(class.library()), member.function, None, values, None);
     }
     Err(runtime(format!("{} is not a valid member of {}", describe_key(&key), class.name)))
 }
@@ -803,21 +905,17 @@ fn new_index(lua: &Lua, class: &Arc<ClassShared>, values: &[Value]) -> Result<Mu
             .set
             .ok_or_else(|| runtime(format!("{} is read only", property.label)))?;
         let value = values.get(2).cloned().unwrap_or(Value::Nil);
-        invoke(lua, &property.label, setter, object_value(&object), &[value], Some(&object))?;
+        invoke(lua, &property.label, Some(class.library()), setter, object_value(&object), &[value], Some(&object))?;
         return Ok(MultiValue::new());
     }
     if let Some(member) = class.operators.get("__newindex") {
-        invoke(lua, &member.label, member.function, None, values, None)?;
+        invoke(lua, &member.label, Some(class.library()), member.function, None, values, None)?;
         return Ok(MultiValue::new());
     }
     Err(runtime(format!("{} is not a valid member of {}", describe_key(&key), class.name)))
 }
 
-fn class_table(lua: &Lua, class: &Arc<ClassShared>) -> Result<Table> {
-    let slot = slot_for(lua, class)?;
-    if let Some(table) = with_host(lua, |host| host.slots.get(slot).and_then(|entry| entry.statics.clone())) {
-        return Ok(table);
-    }
+fn statics_table(lua: &Lua, class: &Arc<ClassShared>) -> Result<Table> {
     let table = lua.create_table()?;
     for (name, member) in &class.statics {
         table.raw_set(
@@ -840,7 +938,25 @@ fn class_table(lua: &Lua, class: &Arc<ClassShared>) -> Result<Table> {
             let getter = property
                 .get
                 .ok_or_else(|| runtime(format!("{} cannot be read", property.label)))?;
-            invoke(lua, &property.label, getter, None, &[], None)
+            invoke(lua, &property.label, Some(reader.library()), getter, None, &[], None)
+        })?,
+    )?;
+    let writer = class.clone();
+    meta.raw_set(
+        "__newindex",
+        lua.create_function(move |lua, (_, key, value): (Value, Value, Value)| {
+            let property = match &key {
+                Value::String(text) => writer.static_properties.get(&*text.to_str()?).cloned(),
+                _ => None,
+            };
+            let Some(property) = property else {
+                return Err(runtime(format!("{} is not a valid member of {}", describe_key(&key), writer.name)));
+            };
+            let setter = property
+                .set
+                .ok_or_else(|| runtime(format!("{} is read only", property.label)))?;
+            invoke(lua, &property.label, Some(writer.library()), setter, None, &[value], None)?;
+            Ok(())
         })?,
     )?;
     let name = class.name.clone();
@@ -848,6 +964,15 @@ fn class_table(lua: &Lua, class: &Arc<ClassShared>) -> Result<Table> {
     meta.raw_set("__metatable", class.name.as_str())?;
     table.set_metatable(Some(meta))?;
     table.set_readonly(true);
+    Ok(table)
+}
+
+fn class_table(lua: &Lua, class: &Arc<ClassShared>) -> Result<Table> {
+    let slot = slot_for(lua, class)?;
+    if let Some(table) = with_host(lua, |host| host.slots.get(slot).and_then(|entry| entry.statics.clone())) {
+        return Ok(table);
+    }
+    let table = statics_table(lua, class)?;
     with_host(lua, |host| {
         if let Some(entry) = host.slots.get_mut(slot) {
             entry.statics = Some(table.clone());
@@ -856,10 +981,20 @@ fn class_table(lua: &Lua, class: &Arc<ClassShared>) -> Result<Table> {
     Ok(table)
 }
 
+fn service_table(lua: &Lua, service: &Arc<ClassShared>) -> Result<Table> {
+    if let Some(table) = with_host(lua, |host| host.services.get(&service.name).cloned()) {
+        return Ok(table);
+    }
+    let table = statics_table(lua, service)?;
+    with_host(lua, |host| host.services.insert(service.name.clone(), table.clone()));
+    Ok(table)
+}
+
 pub struct Exports {
     library: Arc<LibraryShared>,
     classes: Vec<Arc<ClassShared>>,
     functions: Vec<(String, Member)>,
+    services: Vec<Arc<ClassShared>>,
 }
 
 impl Exports {
@@ -877,6 +1012,17 @@ impl Exports {
         table.set_readonly(true);
         Ok(table)
     }
+
+    pub fn services(&self, lua: &Lua) -> Result<Vec<(String, Table)>> {
+        self.services
+            .iter()
+            .map(|service| Ok((service.name.clone(), service_table(lua, service)?)))
+            .collect()
+    }
+
+    pub fn service_names(&self) -> Vec<String> {
+        self.services.iter().map(|service| service.name.clone()).collect()
+    }
 }
 
 pub struct Registry {
@@ -884,6 +1030,7 @@ pub struct Registry {
     library: Arc<LibraryShared>,
     classes: Vec<Arc<ClassShared>>,
     functions: Vec<(String, Member)>,
+    services: Vec<Arc<ClassShared>>,
     errors: Vec<String>,
 }
 
@@ -892,6 +1039,7 @@ pub fn register(library: &Arc<LibraryShared>) -> std::result::Result<Exports, St
         library: library.clone(),
         classes: Vec::new(),
         functions: Vec::new(),
+        services: Vec::new(),
     };
     let Ok(symbol) = (unsafe { library.library.get::<RawRegister>(REGISTER) }) else {
         return Ok(empty(library));
@@ -902,6 +1050,7 @@ pub fn register(library: &Arc<LibraryShared>) -> std::result::Result<Exports, St
         library: library.clone(),
         classes: Vec::new(),
         functions: Vec::new(),
+        services: Vec::new(),
         errors: Vec::new(),
     };
     let status = unsafe { entry(&API, &mut registry) };
@@ -920,6 +1069,7 @@ pub fn register(library: &Arc<LibraryShared>) -> std::result::Result<Exports, St
         library: library.clone(),
         classes: registry.classes,
         functions: registry.functions,
+        services: registry.services,
     })
 }
 
@@ -1102,6 +1252,54 @@ unsafe fn build_class(registry: &mut Registry, info: &RawClassInfo) -> std::resu
     Ok(class)
 }
 
+unsafe fn build_service(registry: &mut Registry, info: &RawServiceInfo) -> std::result::Result<Arc<ClassShared>, String> {
+    let name = unsafe { text(info.name) }
+        .filter(|name| identifier(name))
+        .ok_or("a service needs a name made of letters, digits and underscores")?;
+    if registry.services.iter().any(|known| known.name == name) {
+        return Err(format!("the service {name} is defined twice"));
+    }
+    let mut statics: Vec<(String, Member)> = Vec::new();
+    for (function_name, function, flags) in unsafe { method_list(info.functions) }.map_err(|error| format!("{name}: {error}"))? {
+        let function = function.ok_or_else(|| format!("{name}.{function_name} has no function"))?;
+        if !identifier(&function_name) || function_name.starts_with("__") {
+            return Err(format!("{name}: '{function_name}' is not a valid function name"));
+        }
+        if statics.iter().any(|(known, _)| *known == function_name) {
+            return Err(format!("{name}.{function_name} is defined twice"));
+        }
+        let label = format!("{name}.{function_name}").into();
+        statics.push((function_name, Member {
+            label,
+            function,
+            mode: Mode::from_flags(flags),
+        }));
+    }
+    let static_properties = build_properties(
+        &name,
+        unsafe { property_list(info.properties) }.map_err(|error| format!("{name}: {error}"))?,
+        ".",
+    )?;
+    if let Some((clash, _)) = statics.iter().find(|(function, _)| static_properties.contains_key(function)) {
+        return Err(format!("{name}.{clash} is both a function and a property"));
+    }
+    let service = Arc::new(ClassShared {
+        c_name: CString::new(name.clone()).map_err(|_| format!("{name} is not a valid service name"))?,
+        name,
+        size: 0,
+        destroy: None,
+        methods: Vec::new(),
+        properties: HashMap::new(),
+        statics,
+        static_properties,
+        operators: HashMap::new(),
+        module: registry.module,
+        library: RwLock::new(registry.library.clone()),
+    });
+    registry.services.push(service.clone());
+    Ok(service)
+}
+
 fn adopt(registry: &mut Registry, existing: Arc<ClassShared>) -> Arc<ClassShared> {
     *existing.library.write().unwrap_or_else(PoisonError::into_inner) = registry.library.clone();
     if !registry.classes.iter().any(|known| Arc::ptr_eq(known, &existing)) {
@@ -1113,6 +1311,20 @@ fn adopt(registry: &mut Registry, existing: Arc<ClassShared>) -> Arc<ClassShared
 pub struct RefHandle {
     id: u64,
     events: mpsc::UnboundedSender<Event>,
+}
+
+impl RefHandle {
+    pub(super) fn into_raw(id: u64, events: mpsc::UnboundedSender<Event>) -> *mut RefHandle {
+        Box::into_raw(Box::new(RefHandle { id, events }))
+    }
+
+    pub(super) fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub(super) fn send(&self, event: Event) -> bool {
+        self.events.send(event).is_ok()
+    }
 }
 
 #[repr(C)]
@@ -1157,6 +1369,28 @@ pub struct Api {
     send_event: unsafe extern "C" fn(*mut Call) -> i32,
     print: unsafe extern "C" fn(*const c_char),
     warn: unsafe extern "C" fn(*const c_char),
+    define_service: unsafe extern "C" fn(*mut Registry, *const RawServiceInfo) -> *const ClassShared,
+    on_game_thread: unsafe extern "C" fn(*mut Call) -> i32,
+    call_data: unsafe extern "C" fn(*mut Call) -> *mut c_void,
+    arg_value: unsafe extern "C" fn(*mut Call, i32, *mut RawValue) -> i32,
+    push_value: unsafe extern "C" fn(*mut Call, *const RawValue),
+    push_buffer: unsafe extern "C" fn(*mut Call, u64) -> *mut c_void,
+    get_import: unsafe extern "C" fn(*mut Call, *const c_char) -> *mut RefHandle,
+    get_global: unsafe extern "C" fn(*mut Call, *const c_char) -> *mut RefHandle,
+    set_global: unsafe extern "C" fn(*mut Call, *const c_char, *const RawValue) -> i32,
+    get_api: unsafe extern "C" fn(*mut Call, *mut RefHandle, *const c_char) -> *mut RefHandle,
+    new_table: unsafe extern "C" fn(*mut Call) -> *mut RefHandle,
+    new_signal: unsafe extern "C" fn(*mut Call, *const c_char) -> *mut RefHandle,
+    new_function: unsafe extern "C" fn(*mut Call, *const c_char, Option<RawFunction>, *mut c_void, u32) -> *mut RefHandle,
+    read_member: unsafe extern "C" fn(*mut Call, *mut RefHandle, *const c_char, *mut RawValue) -> i32,
+    write_member: unsafe extern "C" fn(*mut Call, *mut RefHandle, *const c_char, *const RawValue) -> i32,
+    call_member: unsafe extern "C" fn(*mut Call, *mut RefHandle, *const c_char, *const RawValue, i32, *mut RawValue, i32) -> i32,
+    construct: unsafe extern "C" fn(*mut Call, *mut RefHandle, *const c_char, *const RawValue, i32) -> *mut RefHandle,
+    connect: unsafe extern "C" fn(*mut Call, *mut RefHandle, *const c_char, Option<RawFunction>, *mut c_void, u32) -> i32,
+    post_call: unsafe extern "C" fn(*mut RefHandle, *const c_char, *const RawValue, i32) -> i32,
+    post_write: unsafe extern "C" fn(*mut RefHandle, *const c_char, *const RawValue) -> i32,
+    schedule: unsafe extern "C" fn(*mut Call, *const c_char, Option<RawFunction>, *mut c_void, f64, u32) -> *mut Task,
+    cancel: unsafe extern "C" fn(*mut Task),
 }
 
 pub static API: Api = Api {
@@ -1200,7 +1434,46 @@ pub static API: Api = Api {
     send_event,
     print,
     warn,
+    define_service,
+    on_game_thread: host::on_game_thread,
+    call_data: host::call_data,
+    arg_value: host::arg_value,
+    push_value: host::push_value,
+    push_buffer: host::push_buffer,
+    get_import: host::get_import,
+    get_global: host::get_global,
+    set_global: host::set_global,
+    get_api: host::get_api,
+    new_table: host::new_table,
+    new_signal: host::new_signal,
+    new_function: host::new_function,
+    read_member: host::read_member,
+    write_member: host::write_member,
+    call_member: host::call_member,
+    construct: host::construct,
+    connect: host::connect,
+    post_call: host::post_call,
+    post_write: host::post_write,
+    schedule: host::schedule,
+    cancel: host::cancel,
 };
+
+unsafe extern "C" fn define_service(registry: *mut Registry, info: *const RawServiceInfo) -> *const ClassShared {
+    let Some(registry) = (unsafe { registry.as_mut() }) else {
+        return ptr::null();
+    };
+    let Some(info) = (unsafe { info.as_ref() }) else {
+        registry.errors.push("define_service needs a service description".to_owned());
+        return ptr::null();
+    };
+    match unsafe { build_service(registry, info) } {
+        Ok(service) => Arc::as_ptr(&service),
+        Err(error) => {
+            registry.errors.push(error);
+            ptr::null()
+        }
+    }
+}
 
 unsafe extern "C" fn define_class(registry: *mut Registry, info: *const RawClassInfo) -> *const ClassShared {
     let Some(registry) = (unsafe { registry.as_mut() }) else {
@@ -1591,6 +1864,9 @@ unsafe extern "C" fn begin_event(handle: *mut RefHandle) -> *mut Call {
         events: Some(handle.events.clone()),
         target: Some(handle.id),
         _holds: Vec::new(),
+        data: 0,
+        scratch: Vec::new(),
+        library: None,
     }))
 }
 

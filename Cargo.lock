@@ -1904,7 +1904,7 @@ dependencies = [
 
 [[package]]
 name = "luv"
-version = "0.1.5"
+version = "1.7.0"
 dependencies = [
  "anyhow",
  "argon2",

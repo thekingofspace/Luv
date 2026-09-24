@@ -45,6 +45,7 @@ pub fn engine_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
             },
             buffer(4, wgpu::BufferBindingType::Storage { read_only: true }),
             texture(5),
+            buffer(6, wgpu::BufferBindingType::Storage { read_only: true }),
         ],
     })
 }

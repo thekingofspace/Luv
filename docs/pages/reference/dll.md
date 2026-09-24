@@ -82,12 +82,15 @@ On Windows, luv looks for the DLLs that a library needs in the folder of that li
 
 When the library exports a `luv_register` function, luv runs it right after loading. The classes and functions it adds show up in [Library.Exports](library.md#exports). See [Plugin API for C](native-c.md#luv-register).
 
+A library can also add [services](library.md#services). Each one becomes a name for [import](globals.md#import) once `Load` finishes, so load the library before you import them.
+
 It errors when:
 
 - The path is empty. The message is `DLL.Load needs the path of a library`.
 - No file was found. The message is `cannot find './name', looked for ...` and lists every path luv tried.
 - The system could not load the file. The message starts with `cannot load`.
 - `luv_register` failed. The message starts with `luv_register in <path> failed`.
+- A service name is already an import. The message starts with `'Net' cannot be a service because`.
 
 ```luau
 local DLL = import("DLL")

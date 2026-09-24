@@ -5,7 +5,7 @@ use mlua::AnyUserData;
 
 use super::data::Bytes;
 use crate::datatypes::{Color, UDim};
-use crate::graphics::geometry::{Collider, ShapeKind};
+use crate::graphics::geometry::{Collider, Outline, ShapeKind};
 use crate::graphics::protocol::{
     Blend, Body, FontId, NativeHook, ObjectId, ShaderId, SlotContent, Snapshot, TextContent, TextureId, Transform,
 };
@@ -110,6 +110,8 @@ pub struct Object {
     pub blend: Blend,
     pub sink: bool,
     pub shaders: Vec<Loaded>,
+    pub outline: Option<Outline>,
+    pub hit_threshold: Option<f64>,
     pub shader_ids: Arc<[ShaderId]>,
     pub slots: BTreeMap<(u32, u32), Slot>,
     pub vertex_count: u32,
@@ -146,6 +148,8 @@ impl Object {
             blend: Blend::Alpha,
             sink: true,
             shaders: Vec::new(),
+            outline: None,
+            hit_threshold: None,
             shader_ids: Arc::from([]),
             slots: BTreeMap::new(),
             vertex_count: 6,
@@ -253,12 +257,12 @@ impl Object {
     }
 
     pub fn collider(&mut self, id: ObjectId) -> Option<Collider> {
-        let shape = match self.kind {
+        let (shape, outline) = match self.kind {
             Kind::Renderable | Kind::Post => return None,
-            Kind::Shape => self.shape,
-            Kind::Image | Kind::Text => ShapeKind::Rectangle,
+            Kind::Shape => (self.shape, self.outline.clone()),
+            Kind::Image | Kind::Text => (ShapeKind::Rectangle, None),
         };
-        Some(self.transform().collider(id, shape))
+        Some(self.transform().collider(id, shape, outline))
     }
 
     pub fn sync_shader_ids(&mut self) {
@@ -279,6 +283,7 @@ impl Object {
                 transform: self.transform(),
                 color: color(self.color),
                 shape: self.shape,
+                outline: self.outline.clone(),
                 stroke_color: color(self.stroke_color),
                 stroke: self.stroke as f32,
             },

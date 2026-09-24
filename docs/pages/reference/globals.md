@@ -73,6 +73,8 @@ An unknown name raises an error that lists every name:
 'Physics' cannot be imported, the available imports are Asset, Bulk, Container, Crypto, DLL, FS, Messenger, Net, Process, Random, Serde, Shader, Signal, Viewport, Window
 ```
 
+A native plugin can add a name of its own, called a service. It joins the list when [DLL.Load](dll.md#load) finishes, so load the library first. See [Services](native-c.md#services).
+
 ### print
 
 ```luau

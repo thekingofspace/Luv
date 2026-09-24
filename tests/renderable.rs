@@ -43,6 +43,15 @@ fn project(script: &str) -> TempDir {
     quad.put_pixel(1, 1, image::Rgba([255, 255, 255, 255]));
     quad.save(assets.join("quad.png")).unwrap();
     std::fs::write(assets.join("notes.txt"), "not an image").unwrap();
+    let mut sheet = image::RgbaImage::new(4, 2);
+    for y in 0..2 {
+        for x in 0..4 {
+            let solid = x >= 2 || (x == 0 && y == 0);
+            let alpha = if solid { 255 } else { 0 };
+            sheet.put_pixel(x, y, image::Rgba([255, 255, 255, alpha]));
+        }
+    }
+    sheet.save(assets.join("sheet.png")).unwrap();
     dir
 }
 
@@ -335,6 +344,117 @@ capture(window, "reordered")
     assert_pixel(reordered, 5, 5, [255, 255, 255, 255]);
     assert_pixel(reordered, 75, 50, [255, 0, 0, 255]);
     assert_pixel(reordered, 85, 50, [0, 0, 255, 255]);
+}
+
+#[tokio::test]
+async fn custom_outlines_draw_their_own_shape() {
+    if !gpu() {
+        return;
+    }
+    let dir = project(&script(
+        r#"
+Renderable.new("RenderableShape", {
+    Position = udim.new(50, 50),
+    Size = udim.new(60, 60),
+    Color = color.new(1, 0, 0, 1),
+    Outline = {
+        udim.new(-0.5, -0.5),
+        udim.new(0, -0.5),
+        udim.new(0, 0),
+        udim.new(0.5, 0),
+        udim.new(0.5, 0.5),
+        udim.new(-0.5, 0.5),
+    },
+})
+ready()
+capture(window, "ell")
+"#,
+    ));
+    let run = run(dir.path(), true).await;
+    run.outcome.assert_clean();
+    let ell = &run.captures["ell"];
+    assert_pixel(ell, 35, 35, [255, 0, 0, 255]);
+    assert_pixel(ell, 35, 65, [255, 0, 0, 255]);
+    assert_pixel(ell, 65, 65, [255, 0, 0, 255]);
+    assert_pixel(ell, 65, 35, [0, 0, 0, 255]);
+    assert_pixel(ell, 5, 5, [0, 0, 0, 255]);
+}
+
+const ALPHA_SCENE: &str = r#"
+local Asset = import("Asset")
+local sheet = Asset.Load("sheet.png")
+local sprite = Renderable.new("RenderableImage", {
+    Name = "Sprite",
+    Image = sheet,
+    Position = udim.new(100, 100),
+    Size = udim.new(40, 40),
+    OffsetPosition = udim.new(0, 0),
+    OffsetSize = udim.new(2, 2),
+})
+local function names(list)
+    local found = {}
+    for _, item in list do
+        table.insert(found, item.Name)
+    end
+    return table.concat(found, ",")
+end
+local function distance(hit)
+    if not hit then
+        return -1
+    end
+    return math.round(hit.Distance * 100) / 100
+end
+results = {}
+results.boxSolid = names(Renderable.QueryPoint(udim.new(90, 90)))
+results.boxClear = names(Renderable.QueryPoint(udim.new(110, 90)))
+sprite.HitThreshold = 0.5
+results.threshold = sprite.HitThreshold
+results.solid = names(Renderable.QueryPoint(udim.new(90, 90)))
+results.clear = names(Renderable.QueryPoint(udim.new(110, 90)))
+results.below = names(Renderable.QueryPoint(udim.new(90, 110)))
+results.rayIntoSolid = distance(Renderable.Raycast(udim.new(60, 90), udim.new(100, 0)))
+results.rayThroughClear = distance(Renderable.Raycast(udim.new(60, 110), udim.new(100, 0)))
+sprite.OffsetPosition = udim.new(2, 0)
+results.secondCell = names(Renderable.QueryPoint(udim.new(110, 90)))
+results.secondBelow = names(Renderable.QueryPoint(udim.new(90, 110)))
+sprite.HitThreshold = nil
+results.offAgain = names(Renderable.QueryPoint(udim.new(90, 110)))
+"#;
+
+fn assert_alpha_results(results: &Table) {
+    let text = |key: &str| results.get::<String>(key).unwrap();
+    let number = |key: &str| results.get::<f64>(key).unwrap();
+    assert_eq!(text("boxSolid"), "Sprite");
+    assert_eq!(text("boxClear"), "Sprite", "without a threshold the whole box is hit");
+    assert!((number("threshold") - 0.5).abs() < 1e-9);
+    assert_eq!(text("solid"), "Sprite");
+    assert_eq!(text("clear"), "", "a clear pixel of the sprite must not be hit");
+    assert_eq!(text("below"), "");
+    assert!((number("rayIntoSolid") - 20.0).abs() < 1.0, "rayIntoSolid {}", number("rayIntoSolid"));
+    assert!((number("rayThroughClear") + 1.0).abs() < 1e-9, "a ray over clear pixels must miss");
+    assert_eq!(text("secondCell"), "Sprite", "the second cell of the sheet is solid");
+    assert_eq!(text("secondBelow"), "Sprite");
+    assert_eq!(text("offAgain"), "Sprite", "clearing HitThreshold goes back to the whole box");
+}
+
+#[tokio::test]
+async fn image_queries_follow_clear_pixels_on_the_cpu() {
+    let dir = project(&script(ALPHA_SCENE));
+    let run = run(dir.path(), false).await;
+    run.outcome.assert_clean();
+    assert_alpha_results(&run.outcome.global("results"));
+}
+
+#[tokio::test]
+async fn image_queries_follow_clear_pixels_on_the_gpu() {
+    if !gpu() {
+        return;
+    }
+    let dir = project(&script(&format!("ready()
+{ALPHA_SCENE}")));
+    let run = run(dir.path(), true).await;
+    run.outcome.assert_clean();
+    assert_alpha_results(&run.outcome.global("results"));
 }
 
 const FORMATS: [&str; 12] = [
@@ -927,6 +1047,91 @@ async fn queries_find_renderables_on_the_gpu() {
     let run = run(dir.path(), true).await;
     run.outcome.assert_clean();
     assert_query_results(&run.outcome.global("results"));
+}
+
+const OUTLINE_SCENE: &str = r#"
+local function point(x, y)
+    return udim.new(x, y)
+end
+local shape = Renderable.new("RenderableShape", {
+    Name = "Ell",
+    Position = udim.new(100, 100),
+    Size = udim.new(40, 40),
+    Outline = {
+        point(-0.5, -0.5),
+        point(0, -0.5),
+        point(0, 0),
+        point(0.5, 0),
+        point(0.5, 0.5),
+        point(-0.5, 0.5),
+    },
+})
+local function names(list)
+    local found = {}
+    for _, item in list do
+        table.insert(found, item.Name)
+    end
+    return table.concat(found, ",")
+end
+local function distance(hit)
+    if not hit then
+        return -1
+    end
+    return math.round(hit.Distance * 100) / 100
+end
+local kept = {}
+for _, entry in shape.Outline do
+    table.insert(kept, tostring(entry))
+end
+results = {
+    arm = names(Renderable.QueryPoint(udim.new(90, 90))),
+    notch = names(Renderable.QueryPoint(udim.new(110, 90))),
+    foot = names(Renderable.QueryPoint(udim.new(110, 110))),
+    throughArm = distance(Renderable.Raycast(udim.new(60, 90), udim.new(100, 0))),
+    pastNotch = distance(Renderable.Raycast(udim.new(110, 60), udim.new(0, 100))),
+    intoArm = distance(Renderable.Raycast(udim.new(90, 60), udim.new(0, 100))),
+    notchArea = names(Renderable.QueryArea(udim.new(112, 88), udim.new(8, 8))),
+    footArea = names(Renderable.QueryArea(udim.new(112, 112), udim.new(8, 8))),
+    notchRadius = names(Renderable.QueryRadius(udim.new(112, 88), 3)),
+    points = #kept,
+    first = kept[1],
+}
+"#;
+
+fn assert_outline_results(results: &Table) {
+    let text = |key: &str| results.get::<String>(key).unwrap();
+    let number = |key: &str| results.get::<f64>(key).unwrap();
+    assert_eq!(text("arm"), "Ell");
+    assert_eq!(text("notch"), "", "the notch of a concave outline must not be hit");
+    assert_eq!(text("foot"), "Ell");
+    assert!((number("throughArm") - 20.0).abs() < 1e-3, "throughArm {}", number("throughArm"));
+    assert!((number("pastNotch") - 40.0).abs() < 1e-3, "pastNotch {}", number("pastNotch"));
+    assert!((number("intoArm") - 20.0).abs() < 1e-3, "intoArm {}", number("intoArm"));
+    assert_eq!(text("notchArea"), "", "an area inside the notch must not overlap");
+    assert_eq!(text("footArea"), "Ell");
+    assert_eq!(text("notchRadius"), "");
+    assert!((number("points") - 6.0).abs() < 1e-9);
+    assert_eq!(text("first"), "UDim(-0.5, -0.5, 0)");
+}
+
+#[tokio::test]
+async fn custom_outlines_query_as_drawn_on_the_cpu() {
+    let dir = project(&script(OUTLINE_SCENE));
+    let run = run(dir.path(), false).await;
+    run.outcome.assert_clean();
+    assert_outline_results(&run.outcome.global("results"));
+}
+
+#[tokio::test]
+async fn custom_outlines_query_as_drawn_on_the_gpu() {
+    if !gpu() {
+        return;
+    }
+    let dir = project(&script(&format!("ready()
+{OUTLINE_SCENE}")));
+    let run = run(dir.path(), true).await;
+    run.outcome.assert_clean();
+    assert_outline_results(&run.outcome.global("results"));
 }
 
 const RANDOM_SCENE: &str = r#"

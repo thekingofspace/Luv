@@ -71,6 +71,7 @@ LUV_EXPORT int32_t luv_register(const LuvApi* given, LuvRegistry* registry) {
 | `LUV_OUT_OF_RANGE` | -2 | `write_data` or `write_texture` got data that does not fit. |
 | `LUV_WRONG_KIND` | -3 | `write_data` or `write_texture` got a name of the wrong kind of shader data. |
 | `LUV_INVALID` | -4 | Bad input to `define_function`, `send_event`, `write_data` or `write_texture`. Return it from `luv_register` to stop the load. |
+| `LUV_OFF_THREAD` | -5 | An engine function was called from a thread that does not run Luau. See [The game thread](#the-game-thread). |
 
 ### Modes
 
@@ -98,12 +99,13 @@ See [Execution modes](#execution-modes).
 | `LUV_KIND_OBJECT` | 6 | An object of a plugin class. |
 | `LUV_KIND_POINTER` | 7 | [Pointer](pointer.md), [NativeFunction](nativefunction.md) or [Callback](callback.md). |
 | `LUV_KIND_VALUE` | 8 | Anything else, like a table, a function or a [Window](window.md). |
+| `LUV_KIND_BUFFER` | 9 | A `buffer`. Only [LuvValue](#luvvalue) uses it. `arg_kind` reports a buffer as `LUV_KIND_STRING`. |
 
 ### Versions
 
 | Name | Value | Meaning |
 | --- | --- | --- |
-| `LUV_API_VERSION` | 1 | The version of `LuvApi`. Compare it with `api->version`. |
+| `LUV_API_VERSION` | 2 | The version of `LuvApi`. Compare it with `api->version`. |
 | `LUV_RENDER_VERSION` | 1 | The version of `LuvRenderContext`. Compare it with `context->version`. |
 
 ## Classes
@@ -174,11 +176,11 @@ typedef struct LuvProperty {
 
 A property needs `get`, `set` or both. End each list with `{0}`.
 
-Static properties can only be read. luv never calls their `set` function.
+A static property with a `set` function can be written, like `Vec3.origin = point`.
 
 ### Names
 
-- Class, method, property and function names use letters, digits and `_`. They cannot start with a digit.
+- Class, service, method, property and function names use letters, digits and `_`. They cannot start with a digit.
 - Method and static names cannot start with `__`. The only exceptions are these operator methods: `__add`, `__sub`, `__mul`, `__div`, `__idiv`, `__mod`, `__pow`, `__unm`, `__eq`, `__lt`, `__le`, `__len`, `__concat`, `__call`, `__tostring`, `__index` and `__newindex`.
 - Operators only go in `methods`, not in `statics`.
 - A name can appear once in each list. A method and a property cannot share a name. A static and a static property cannot share a name.
@@ -381,6 +383,123 @@ print(typeof(a), tostring(a + b), tostring(2 * a))
 print(a:Dot(b), Vec3.new(3, 4, 0).Magnitude, tostring(Vec3.zero))
 ```
 
+## Services
+
+A service is a table that Luau gets from [import](globals.md#import), next to the libraries that luv ships with. It holds functions and properties, and no objects. Use it when your plugin is a whole feature instead of a few loose functions.
+
+### LuvServiceInfo
+
+```c
+typedef struct LuvServiceInfo {
+    const char* name;
+    const LuvMethod* functions;
+    const LuvProperty* properties;
+} LuvServiceInfo;
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `name` | `const char*` | The name for `import`. |
+| `functions` | `const LuvMethod*` | Functions on the table, called with a dot. Can be NULL. |
+| `properties` | `const LuvProperty*` | Values on the table, read and written with a dot. Can be NULL. |
+
+A service works like the class table of a class with no objects. `tostring` gives its name. Other keys error with `'Nope' is not a valid member of Fixture`. The functions cannot be replaced from Luau.
+
+The name arrives in Luau when [DLL.Load](dll.md#load) finishes, so load the library before you import the service.
+
+```c
+static void physics_gravity_get(LuvCall* call) {
+    api->push_number(call, gravity);
+}
+
+static void physics_gravity_set(LuvCall* call) {
+    gravity = api->check_number(call, 0);
+}
+
+static void physics_step(LuvCall* call) {
+    api->push_number(call, advance(api->check_number(call, 0)));
+}
+
+static const LuvMethod physics_functions[] = {
+    {"Step", physics_step, LUV_INLINE},
+    {0},
+};
+
+static const LuvProperty physics_properties[] = {
+    {"Gravity", physics_gravity_get, physics_gravity_set},
+    {0},
+};
+
+LUV_EXPORT int32_t luv_register(const LuvApi* given, LuvRegistry* registry) {
+    api = given;
+    if (api->version < LUV_API_VERSION) {
+        return LUV_INVALID;
+    }
+    LuvServiceInfo info = {"Physics", physics_functions, physics_properties};
+    return api->define_service(registry, &info) ? LUV_OK : LUV_INVALID;
+}
+```
+
+```luau
+local DLL = import("DLL")
+
+DLL.Load("./physics")
+local Physics = import("Physics")
+Physics.Gravity = 9.81
+print(Physics.Step(1 / 60))
+```
+
+A service name cannot match a library that luv already ships, like `Net` or `Window`. `DLL.Load` then fails with `'Net' cannot be a service because luv already imports a library with that name`. [Library:GetServices](library.md#getservices) lists the names a library added.
+
+To type the service in Luau, put a type file next to your sources. See [Type files](../manual/native-plugins.md#type-files).
+
+## LuvValue
+
+The engine functions pass Luau values in and out with one struct.
+
+```c
+typedef struct LuvValue {
+    int32_t kind;
+    uint32_t flags;
+    double numbers[4];
+    const void* data;
+    uint64_t length;
+    LuvRef* handle;
+} LuvValue;
+```
+
+| `kind` | What to fill in | What you get back |
+| --- | --- | --- |
+| `LUV_KIND_NIL` | nothing | nothing |
+| `LUV_KIND_BOOLEAN` | `numbers[0]`, 0 for false | `numbers[0]` |
+| `LUV_KIND_NUMBER` | `numbers[0]` | `numbers[0]` |
+| `LUV_KIND_STRING` | `data` and `length` | `data` and `length`, with a zero byte after the text |
+| `LUV_KIND_BUFFER` | `data` and `length` | `data` and `length` |
+| `LUV_KIND_UDIM` | `numbers[0]` to `numbers[2]` | the same three |
+| `LUV_KIND_COLOR` | `numbers[0]` to `numbers[3]` | the same four |
+| `LUV_KIND_POINTER` | `data` as the address | `data` as the address |
+| `LUV_KIND_OBJECT` | `handle` | `handle`, and `data` as the object data |
+| `LUV_KIND_VALUE` | `handle` | `handle` |
+
+`flags` is not used yet. Set it to 0.
+
+luv copies the bytes you pass in, so they only need to live while the call runs. The bytes you get back live until your function returns.
+
+A `handle` you get back is yours. Call `release` on it when you are done, the same as one from `retain`. A `handle` you pass in stays yours.
+
+`luv.h` builds one for you:
+
+```c
+LuvValue nothing = luv_nil();
+LuvValue yes = luv_boolean(1);
+LuvValue count = luv_number(12);
+LuvValue name = luv_bytes("player", 6);
+LuvValue samples = luv_buffer(pcm, sizeof pcm);
+LuvValue size = luv_udim(64, 48, 0);
+LuvValue tint = luv_color(1, 0, 0, 1);
+LuvValue held = luv_held(handle);
+```
+
 ## LuvApi
 
 `luv_register` gets a `const LuvApi*`. Each function in it is a field that you call through the pointer, like `api->push_number(call, 1)`.
@@ -492,6 +611,147 @@ static void countdown(LuvCall* call) {
         api->send_event(event);
     }
     api->release(handler);
+}
+```
+
+### The game thread
+
+Luau runs on one thread. The functions in [The engine](#the-engine), [Members](#members) and [Timed work](#timed-work) need that thread, because they read and write Luau values.
+
+They work in:
+
+- A function, method, property or operator with `LUV_INLINE`.
+- A signal handler or function value made with `LUV_INLINE`.
+- A task from `schedule` with `LUV_INLINE`.
+
+They do not work in a `LUV_WORKER` or `LUV_PARALLEL` call, in a render hook or on a thread of your own. There they fail the call with `read_member needs the game thread, register it with LUV_INLINE` and return `LUV_OFF_THREAD` or NULL. Use `on_game_thread` to check first, or use [From any thread](#from-any-thread) instead.
+
+These functions call back into Luau. Keep them short. A long one holds up every frame.
+
+### Values
+
+| Function | Returns | Description |
+| --- | --- | --- |
+| `on_game_thread(call)` | `int32_t` | 1 when this call runs on the thread that runs Luau, 0 when it does not. |
+| `call_data(call)` | `void*` | The `data` pointer you gave to `new_function`, `connect` or `schedule`. NULL in every other call. |
+| `arg_value(call, index, out)` | `int32_t` | Writes the argument at `index` into `out`. Returns `LUV_OK`, or `LUV_OUT_OF_RANGE` with a kind of `LUV_KIND_NONE`. Works from any thread. |
+| `push_value(call, value)` | nothing | Pushes a `LuvValue` as a result. NULL pushes `nil`. Works from any thread. |
+| `push_buffer(call, length)` | `void*` | Pushes a Luau `buffer` of `length` bytes and returns memory to fill. The bytes start at zero. The memory lives until your function returns. Returns NULL when the length does not fit. Works from any thread. |
+
+`arg_value` gives a `handle` for a table, a function or an engine object. That handle is yours, so `release` it when you are done.
+
+`push_buffer` is the short way to hand raw bytes to Luau. A [FromBytes](frombytes.md) node takes them straight, so a plugin can make sound and push it in.
+
+```c
+static void samples(LuvCall* call) {
+    uint64_t frames = (uint64_t)api->check_number(call, 0);
+    int16_t* room = (int16_t*)api->push_buffer(call, frames * 2 * sizeof(int16_t));
+    if (room) {
+        fill_tone(room, frames);
+    }
+}
+```
+
+### The engine
+
+| Function | Returns | Description |
+| --- | --- | --- |
+| `get_import(call, name)` | `LuvRef*` | The library or service that [import](globals.md#import) gives for `name`. NULL when there is none. |
+| `get_global(call, name)` | `LuvRef*` | A global from Luau. NULL when the read fails. A missing name gives a ref that holds `nil`. |
+| `set_global(call, name, value)` | `int32_t` | Sets a global. Returns `LUV_OK` or `LUV_INVALID`. |
+| `get_api(call, window, name)` | `LuvRef*` | The same as `window:GetAPI(name)`. NULL when the window or the name is wrong. |
+| `new_table(call)` | `LuvRef*` | A new empty Luau table. |
+| `new_signal(call, name)` | `LuvRef*` | A new [Signal](signal.md). NULL or an empty name gives an unnamed one. |
+| `new_function(call, name, function, data, flags)` | `LuvRef*` | A Luau function that runs `function`. `data` comes back from `call_data`. `flags` picks the [mode](#execution-modes). |
+
+`name` is only used in error messages for `new_function`.
+
+A function value made with `LUV_WORKER` or `LUV_PARALLEL` yields the coroutine that calls it, the same as a worker method.
+
+Keep the `data` pointer alive for as long as the function or task can run. luv never frees it.
+
+### Members
+
+These work on the value a ref holds. The value can be an engine object like a [Window](window.md) or a [Renderable](renderable.md), a table, or anything else with fields.
+
+| Function | Returns | Description |
+| --- | --- | --- |
+| `read_member(call, target, name, out)` | `int32_t` | Reads `target.name` into `out`. Returns `LUV_OK`, or `LUV_UNKNOWN_NAME` and fails the call. |
+| `write_member(call, target, name, value)` | `int32_t` | Sets `target.name`. Returns `LUV_OK`, or `LUV_UNKNOWN_NAME` and fails the call. |
+| `call_member(call, target, name, args, count, results, limit)` | `int32_t` | Calls `target:name(...)` with `count` arguments. Writes up to `limit` results into `results` and returns how many it wrote. Returns a result code below 0 when the call fails. |
+| `construct(call, api, name, args, count)` | `LuvRef*` | Calls `api.name(...)` with a dot and holds the first result. NULL when the call fails. |
+| `connect(call, signal, id, function, data, flags)` | `int32_t` | Binds `function` to a [Signal](signal.md) under `id`, the same as `signal:BindHandler(id, handler)`. Returns `LUV_OK` or a code below 0. |
+
+`call_member` passes the target as `self`, like a colon call in Luau. `construct` does not, like a dot call. Pass NULL and 0 when there are no arguments. At most 64 arguments and 64 results.
+
+A method that yields, like a query or a network read, cannot run through `call_member`. Send it with `post_call` instead, which runs it in its own coroutine.
+
+This makes a shape in a window and keeps it:
+
+```c
+static void make_shape(LuvCall* call) {
+    LuvValue window = luv_nil();
+    if (api->arg_value(call, 0, &window) != LUV_OK || !window.handle) {
+        api->fail(call, "make_shape needs a window");
+        return;
+    }
+    LuvRef* renderable = api->get_api(call, window.handle, "Renderable");
+    LuvValue class_name = luv_bytes("RenderableShape", 15);
+    LuvRef* shape = api->construct(call, renderable, "new", &class_name, 1);
+    if (shape) {
+        LuvValue size = luv_udim(64, 48, 0);
+        api->write_member(call, shape, "Size", &size);
+        api->push_ref(call, shape);
+        api->release(shape);
+    }
+    api->release(renderable);
+    api->release(window.handle);
+}
+```
+
+### From any thread
+
+| Function | Returns | Description |
+| --- | --- | --- |
+| `post_call(target, name, args, count)` | `int32_t` | Asks luv to call `target:name(...)` later. Returns `LUV_OK`, or `LUV_INVALID` when the game has closed. |
+| `post_write(target, name, value)` | `int32_t` | Asks luv to set `target.name` later. Returns `LUV_OK` or `LUV_INVALID`. |
+
+Both copy what you pass and return right away. luv runs them on the game thread, in the order you sent them, together with the events from `send_event`. A method runs in its own coroutine, so one that yields is fine.
+
+Nothing comes back. When you need the answer, call from an inline function instead.
+
+```c
+static void nudge(LuvCall* call) {
+    LuvValue target = luv_nil();
+    if (api->arg_value(call, 0, &target) == LUV_OK && target.handle) {
+        LuvValue position = luv_udim(10, 20, 0);
+        api->post_write(target.handle, "Position", &position);
+        api->release(target.handle);
+    }
+}
+```
+
+### Timed work
+
+| Function | Returns | Description |
+| --- | --- | --- |
+| `schedule(call, name, function, data, seconds, flags)` | `LuvTask*` | Runs `function` again and again with a gap of `seconds`. NULL when the gap is not a number of at least 0 or the call is not on the game thread. |
+| `cancel(task)` | nothing | Stops the task and frees the handle. Call it once for each task. Works from any thread. |
+
+The gap is at least one thousandth of a second, so 0 means every millisecond. The first run waits one gap.
+
+`name` is only used in error messages. `data` comes back from `call_data`. `flags` picks the [mode](#execution-modes), and only `LUV_INLINE` can reach the engine.
+
+A task does not keep the game running. It stops when the game ends, when its library is destroyed, and when you cancel it. Errors from it are reported like other uncaught errors.
+
+```c
+static void beat(LuvCall* call) {
+    Sim* sim = (Sim*)api->call_data(call);
+    api->post_call(sim->listener, "Fire", NULL, 0);
+}
+
+static void start(LuvCall* call) {
+    sim.task = api->schedule(call, "sim", beat, &sim, 1.0 / 60.0, LUV_INLINE);
 }
 ```
 

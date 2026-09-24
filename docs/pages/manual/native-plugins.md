@@ -28,6 +28,7 @@ my-game/
 | Entry | What luv makes from it |
 | --- | --- |
 | `luv.h`, `luv.rs` | Nothing. These are the plugin API for C and for Rust. See [Plugin API for C](../reference/native-c.md) and [Plugin API for Rust](../reference/native-rust.md). |
+| `mathlib.d.luau` | Nothing to build. A file ending in `.d.luau` is a type file. luv folds it into `types.d.luau`. See [Type files](#type-files). |
 | `mathlib.c` | `mathlib.dll` on Windows or `libmathlib.so` on Linux. Each C or C++ file right inside `native` becomes its own library, named after the file. |
 | `physics/` | `physics.dll` or `libphysics.so`. A folder with C or C++ files becomes one library, named after the folder. luv also finds the files in its subfolders. |
 | `counter/` | `counter.dll` or `libcounter.so`. A folder with a `Cargo.toml` is a Rust crate. The library is named after the crate. |
@@ -37,7 +38,7 @@ More rules:
 
 - C and C++ files end in `.c`, `.cc`, `.cpp` or `.cxx`. A library with any C++ file is built as C++.
 - Ready made libraries are `.dll` files on Windows. On Linux they are `.so` files, and files like `libsdk.so.1`. So one project can hold both builds of the same library.
-- luv skips every other file, like headers.
+- luv skips every other file, like headers and type files.
 - The `native` folder is on the include path. So `#include "luv.h"` works from any subfolder.
 - Two entries that make the same file name stop the build.
 
@@ -373,6 +374,107 @@ This prints `tick 3`, `tick 2` and `tick 1`.
 - Call `release` once for each ref when you no longer need it.
 - Refs and events do not keep the game running. If nothing else keeps it running, the game can end before the events arrive.
 
+## Services
+
+A plugin can add a name to [import](../reference/globals.md#import), next to the libraries luv ships with. That name is a service. Use it when the plugin is a whole feature and not a few loose functions.
+
+A service is a table of functions and properties. It has no objects, so it needs no size and no destructor.
+
+```c title="native/physics.c"
+#include "luv.h"
+
+static const LuvApi* api;
+static double gravity = 9.81;
+
+static void get_gravity(LuvCall* call) {
+    api->push_number(call, gravity);
+}
+
+static void set_gravity(LuvCall* call) {
+    gravity = api->check_number(call, 0);
+}
+
+static void step(LuvCall* call) {
+    api->push_number(call, api->check_number(call, 0) * gravity);
+}
+
+static const LuvMethod functions[] = {
+    {"Step", step, LUV_INLINE},
+    {0},
+};
+
+static const LuvProperty properties[] = {
+    {"Gravity", get_gravity, set_gravity},
+    {0},
+};
+
+LUV_EXPORT int32_t luv_register(const LuvApi* given, LuvRegistry* registry) {
+    api = given;
+    if (api->version < LUV_API_VERSION) {
+        return LUV_INVALID;
+    }
+    LuvServiceInfo info = {"Physics", functions, properties};
+    return api->define_service(registry, &info) ? LUV_OK : LUV_INVALID;
+}
+```
+
+The name arrives when [DLL.Load](../reference/dll.md#load) finishes, so load the library before you import it:
+
+```luau
+local DLL = import("DLL")
+
+DLL.Load("./physics")
+local Physics = import("Physics")
+Physics.Gravity = 1.62
+print(Physics.Step(1 / 60))
+```
+
+[Library:GetServices](../reference/library.md#getservices) lists the names a library added. A name that luv already uses, like `Net`, makes the load fail.
+
+## Type files
+
+A type file tells the Luau language server what your plugin gives Luau. Put it in `native` with a name that ends in `.d.luau`.
+
+```tree
+my-game/
+├── build.toml
+├── types.d.luau
+├── native/
+│   ├── luv.h
+│   ├── physics.c
+│   └── physics.d.luau
+└── src/
+    └── main.luau
+```
+
+| Entry | What it is |
+| --- | --- |
+| `types.d.luau` | The types of the whole game. luv writes it. Do not edit it. |
+| `native/physics.d.luau` | The types of one plugin. You write it. |
+| `native/physics.c` | The plugin itself. |
+
+Write it as normal Luau types. Two names are special:
+
+- `Imports` adds names for [import](../reference/globals.md#import), so your services get types.
+- `WindowAPIs` adds names for [Window:GetAPI](../reference/window.md#getapi).
+
+```luau title="native/physics.d.luau"
+export type Physics_API = {
+	Gravity: number,
+	Step: (delta: number) -> number,
+}
+
+export type Imports = {
+	Physics: Physics_API,
+}
+```
+
+`luv init` reads every type file and writes one `types.d.luau` from the engine types and all of them. It starts from nothing each time, so a type file you delete leaves no trace. `luv test` and `luv build` do the same before they run. `luv types` does only this and prints what changed.
+
+In the file it writes, your fields sit at the end of `Imports` and `WindowAPIs` under a line that names where they came from, and your other types sit at the end of the file between two lines that name the file.
+
+Containers work the same way. A type file in the `native` folder of a container is folded in with the rest, so a container can ship a plugin and its types together. See [Containers](containers.md).
+
 ## Loading plugins
 
 Load a plugin with [DLL.Load](../reference/dll.md#load) and leave out the extension:
@@ -389,6 +491,118 @@ luv adds `.dll` on Windows. On Linux it adds `.so` and also tries a `lib` in fro
 With `luv test`, luv looks next to the `luv` program, then in the build folder, then in the project folder. In a packed game it looks next to the game program. The full order for each command is on [DLL.Load](../reference/dll.md#load).
 
 Plugins in a container load the same way. See [Native plugins in a container](containers.md#native-plugins-in-a-container).
+
+## Reaching the engine from a plugin
+
+A plugin can read and write engine objects, make them, hold a Luau value and run code on a timer. The calls for this are in [The engine](../reference/native-c.md#the-engine) and [Members](../reference/native-c.md#members).
+
+They all need the thread that runs Luau, so the function must use `LUV_INLINE`. Off that thread they fail the call. [The game thread](../reference/native-c.md#the-game-thread) has the full rule.
+
+A [LuvValue](../reference/native-c.md#luvvalue) carries a Luau value in and out. A `LuvRef*` holds one alive. `arg_value` gives you a ref for a table, a function or an engine object, and you `release` it when you are done.
+
+This makes a shape in a window from C:
+
+```c
+static void make_shape(LuvCall* call) {
+    LuvValue window = luv_nil();
+    if (api->arg_value(call, 0, &window) != LUV_OK || !window.handle) {
+        api->fail(call, "make_shape needs a window");
+        return;
+    }
+    LuvRef* renderable = api->get_api(call, window.handle, "Renderable");
+    LuvValue class_name = luv_bytes("RenderableShape", 15);
+    LuvRef* shape = api->construct(call, renderable, "new", &class_name, 1);
+    if (shape) {
+        LuvValue size = luv_udim(64, 48, 0);
+        api->write_member(call, shape, "Size", &size);
+        api->push_ref(call, shape);
+        api->release(shape);
+    }
+    api->release(renderable);
+    api->release(window.handle);
+}
+```
+
+```luau
+local DLL = import("DLL")
+local Window = import("Window")
+
+local plugin = DLL.Load("./shapes")
+local window = Window.new({ Title = "Plugin", Size = udim.new(400, 300) })
+local shape = plugin.Exports.make_shape(window)
+print(shape.ClassName, shape.Size)
+```
+
+### Signals
+
+`new_signal` makes a [Signal](../reference/signal.md) and `connect` binds a C function to one. So a plugin can hand Luau something to listen to, and can listen to a signal that Luau already has.
+
+```c
+static void on_frame(LuvCall* call) {
+    Sim* sim = (Sim*)api->call_data(call);
+    sim->time += api->opt_number(call, 0, 0);
+}
+
+static void watch(LuvCall* call) {
+    LuvValue signal = luv_nil();
+    if (api->arg_value(call, 0, &signal) == LUV_OK && signal.handle) {
+        api->connect(call, signal.handle, "sim", on_frame, &sim, LUV_INLINE);
+        api->release(signal.handle);
+    }
+}
+```
+
+`post_call` fires a signal from any thread, including one of your own:
+
+```c
+LuvValue level = luv_number(0.8);
+api->post_call(sim.signal, "Fire", &level, 1);
+```
+
+### Work on a timer
+
+`schedule` runs a C function again and again, with a gap you pick. With `LUV_INLINE` it runs on the game thread, so it can reach the engine. Keep it short. `cancel` stops it.
+
+```c
+static void beat(LuvCall* call) {
+    Sim* sim = (Sim*)api->call_data(call);
+    sim->ticks++;
+    api->post_call(sim->signal, "Fire", NULL, 0);
+}
+
+static void start(LuvCall* call) {
+    sim.task = api->schedule(call, "sim", beat, &sim, 1.0 / 60.0, LUV_INLINE);
+    api->push_boolean(call, sim.task != NULL);
+}
+
+static void stop(LuvCall* call) {
+    if (sim.task) {
+        api->cancel(sim.task);
+        sim.task = NULL;
+    }
+}
+```
+
+A task does not keep the game running on its own. It stops when the game ends or its library is destroyed.
+
+### Bytes for sound
+
+`push_buffer` pushes a Luau `buffer` and gives you the memory to fill. A [FromBytes](../reference/frombytes.md) node takes the bytes, so a plugin can make sound and play it.
+
+```c
+static void tone(LuvCall* call) {
+    uint64_t frames = (uint64_t)api->check_number(call, 0);
+    int16_t* room = (int16_t*)api->push_buffer(call, frames * 2 * sizeof(int16_t));
+    if (!room) {
+        return;
+    }
+    for (uint64_t index = 0; index < frames; index++) {
+        int16_t sample = (int16_t)(sin(index * 0.1) * 12000);
+        room[index * 2] = sample;
+        room[index * 2 + 1] = sample;
+    }
+}
+```
 
 ## Shipping plugins
 

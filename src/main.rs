@@ -13,6 +13,7 @@ use luv::plugins::{self, Built};
 use luv::project::{self, GameInfo, Project};
 use luv::runtime::aliases;
 use luv::runtime::{Engine, EngineBuilder, Runtime, THREAD_STACK_SIZE};
+use luv::typegen;
 use luv::vfs::{Pak, Vfs};
 use luv::window::{DesktopWindows, WindowSystem};
 
@@ -46,6 +47,11 @@ enum Command {
     },
     #[command(alias = "aliases", about = "Write the container aliases into .luaurc")]
     Luaurc {
+        #[arg(default_value = ".", help = "Workspace directory")]
+        path: PathBuf,
+    },
+    #[command(alias = "typegen", about = "Rebuild types.d.luau from the engine types and every plugin type file")]
+    Types {
         #[arg(default_value = ".", help = "Workspace directory")]
         path: PathBuf,
     },
@@ -138,6 +144,7 @@ async fn execute_command(command: Command, desktop: Option<DesktopWindows>, pack
         Command::Test { path, args } => test(&path, args, windows).await,
         Command::Build { path } => build(&path).await,
         Command::Luaurc { path } => sync_aliases(&path),
+        Command::Types { path } => sync_types(&path),
         Command::Run { path, args } => run(&path, args, windows, packaged).await,
         Command::Package { path, console } => package(&path, console).await,
     }
@@ -161,6 +168,33 @@ fn report_aliases(report: &luaurc::AliasReport, quiet: bool) {
     } else {
         println!("  ~ {message}");
     }
+}
+
+fn report_types(report: &typegen::TypeReport, quiet: bool) {
+    if !report.changed {
+        return;
+    }
+    let message = format!("Updated {} ({})", project::TYPES_FILE, report.summary());
+    if quiet {
+        eprintln!("{message}");
+    } else {
+        println!("  ~ {message}");
+    }
+}
+
+fn sync_types(path: &Path) -> Result<()> {
+    let project = Project::discover(path)?;
+    let report = typegen::sync(&project)?;
+    let file = project.root.join(project::TYPES_FILE);
+    if !report.changed {
+        println!("{} is already up to date", file.display());
+        return Ok(());
+    }
+    println!("Updated {} ({})", file.display(), report.summary());
+    for source in &report.sources {
+        println!("  + {source}");
+    }
+    Ok(())
 }
 
 fn sync_aliases(path: &Path) -> Result<()> {
@@ -237,6 +271,7 @@ async fn test(path: &Path, args: Vec<String>, windows: Option<Arc<dyn WindowSyst
         }
     }
     report_aliases(&luaurc::sync(&project)?, true);
+    report_types(&typegen::sync(&project)?, true);
     let game = Engine::builder(Arc::new(vfs))
         .args(args)
         .game(project.manifest.game.name.clone(), project.root.clone())
@@ -250,6 +285,7 @@ async fn build(path: &Path) -> Result<()> {
     let project = Project::discover(path)?;
     let game = &project.manifest.game;
     let aliases = luaurc::sync(&project)?;
+    let types = typegen::sync(&project)?;
     let report = builder::build(&project).await?;
     let libraries = natives(&project).await?;
     let containers = builder::build_containers(&project, &libraries).await?;
@@ -278,6 +314,7 @@ async fn build(path: &Path) -> Result<()> {
         );
     }
     report_aliases(&aliases, false);
+    report_types(&types, false);
     warn_unpacked(&report.unpacked_libraries);
     Ok(())
 }

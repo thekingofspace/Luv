@@ -10,6 +10,7 @@ use wgpu::naga::{
 pub const ENGINE_GROUP: u32 = 0;
 pub const MAX_GROUP: u32 = 3;
 pub const OBJECTS_BINDING: u32 = 4;
+pub const OUTLINES_BINDING: u32 = 6;
 pub const BACKDROP_BINDING: u32 = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -98,7 +99,7 @@ fn engine_binding(binding: u32, kind: BindingKind) -> bool {
             }
         ),
         3 => matches!(kind, BindingKind::Sampler { comparison: false }),
-        OBJECTS_BINDING => matches!(kind, BindingKind::Storage { read_only: true, .. }),
+        OBJECTS_BINDING | OUTLINES_BINDING => matches!(kind, BindingKind::Storage { read_only: true, .. }),
         BACKDROP_BINDING => matches!(
             kind,
             BindingKind::Texture {

@@ -16,7 +16,7 @@ pub const ASSETS_DIR: &str = "assets";
 
 const MANIFEST_TEMPLATE: &str = include_str!("../templates/build.toml");
 const MAIN_TEMPLATE: &str = include_str!("../templates/main.luau");
-const TYPES_TEMPLATE: &str = include_str!("../templates/types.d.luau");
+pub const TYPES_TEMPLATE: &str = include_str!("../templates/types.d.luau");
 const SETTINGS_TEMPLATE: &str = include_str!("../templates/settings.json");
 const GITIGNORE_TEMPLATE: &str = include_str!("../templates/gitignore");
 const HEADER_TEMPLATE: &str = include_str!("../templates/luv.h");
@@ -348,8 +348,14 @@ pub fn init(dir: &Path, name: Option<String>) -> Result<InitReport> {
     let manifest = MANIFEST_TEMPLATE.replace("\"{{name}}\"", &toml::Value::String(name).to_string());
     let parsed: BuildManifest = toml::from_str(&manifest).context("the build.toml template is invalid")?;
 
+    let mut roots = vec![root.clone()];
+    if existing && let Ok(project) = Project::load(&root) {
+        roots = crate::typegen::roots(&project);
+    }
+    let (types, _) = crate::typegen::build(&root, &roots)?;
+
     let mut files = vec![
-        (TYPES_FILE, TYPES_TEMPLATE, Policy::Sync),
+        (TYPES_FILE, types.as_str(), Policy::Sync),
         (HEADER_FILE, HEADER_TEMPLATE, Policy::Sync),
         (BINDINGS_FILE, BINDINGS_TEMPLATE, Policy::Sync),
         (SETTINGS_FILE, SETTINGS_TEMPLATE, Policy::Create),

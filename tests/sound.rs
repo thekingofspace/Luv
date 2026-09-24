@@ -419,6 +419,14 @@ for kind, state in states do
     end
 end
 
+for _, state in { halved, panned, lowered, raised, passed, metered } do
+    state.node:Destroy()
+end
+for _, state in states do
+    state.node:Destroy()
+end
+sleep(50)
+
 local echo = Sound:Modifier("Echo", { Delay = 0.05, Feedback = 0.5, Mix = 1 })
 local tail = capture(tone, { echo })
 sleep(150)

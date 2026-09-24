@@ -30,6 +30,7 @@ The shape fills the box that Size makes. Its edges are smooth. Queries use the r
 | Name | Type | Default | Description |
 | --- | --- | --- | --- |
 | `Shape` | [ShapeType](enums.md#shapetype) | `enum.ShapeType.Rectangle` | The outline. See [Shapes](#shapes). |
+| `Outline` | `{ UDim }?` | `nil` | Your own outline. It wins over Shape. See [Your own outline](#your-own-outline). |
 | `StrokeColor` | [Color](color.md) | `color.black` | The color of the outline. |
 | `StrokeThickness` | `number` | `0` | The width of the outline in pixels. 0 draws no outline. |
 
@@ -46,6 +47,46 @@ The shape fills the box that Size makes. Its edges are smooth. Queries use the r
 | `Hexagon` | Six sides with corners at the top center and the bottom center. |
 | `Octagon` | Eight sides. They all have the same length when Size is square. |
 
+## Your own outline
+
+`Outline` takes a list of [UDims](udim.md) and uses them as the corners of the shape, in order. Set it back to `nil` to go back to `Shape`.
+
+Each point is a fraction of the box, not a pixel count. `-0.5` is the left or top edge, `0` is the middle and `0.5` is the right or bottom edge. The shape keeps its form when you change Size, the same way the built in shapes do.
+
+```luau
+local Window = import("Window")
+
+local window = Window.new({ Title = "Arrow" })
+local Renderable = window:GetAPI("Renderable")
+
+Renderable.new("RenderableShape", {
+	Position = udim.new(200, 150),
+	Size = udim.new(80, 80),
+	Color = color.new(1, 0.7, 0.2, 1),
+	Outline = {
+		udim.new(-0.5, -0.5),
+		udim.new(0, -0.5),
+		udim.new(0, 0),
+		udim.new(0.5, 0),
+		udim.new(0.5, 0.5),
+		udim.new(-0.5, 0.5),
+	},
+})
+```
+
+The shape can bend inwards. Queries follow the outline you gave, so a point in the dent of that L shape is not inside it, and a ray goes through the dent. Drawing and queries always agree.
+
+Rules:
+
+- It needs at least 3 points, or it raises `an Outline needs at least 3 points, got 2`.
+- It holds at most 255 points, or it raises `an Outline can hold at most 255 points, got 300`.
+- Every point must be a UDim, or it raises `Outline must only hold UDims, got number`. The Z of each UDim is not used.
+- The numbers must be finite, or it raises `Outline points must only hold finite numbers`.
+- An empty list is the same as `nil`.
+- Points that cross over themselves draw and query in a way that follows the crossings. Keep the outline simple for a result you can predict.
+
+Reading `Outline` gives back the list you set, or `nil`.
+
 ## Stroke
 
 The outline is drawn inside the edge of the shape. It covers the outer `StrokeThickness` pixels of the fill, so the shape does not grow. StrokeThickness must be 0 or more, or it raises `StrokeThickness must be a number of at least 0`.
@@ -57,6 +98,7 @@ A fill Color with an alpha of 0 leaves only the outline.
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `Shape` | [ShapeType](enums.md#shapetype) | `enum.ShapeType.Rectangle` | The outline. |
+| `Outline` | `{ UDim }?` | `nil` | Your own outline. It wins over Shape. |
 | `StrokeColor` | [Color](color.md) | `color.black` | The color of the outline. |
 | `StrokeThickness` | `number` | `0` | The width of the outline in pixels. |
 

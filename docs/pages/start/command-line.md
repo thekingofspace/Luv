@@ -9,6 +9,7 @@ luv build my-game
 luv run my-game
 luv package my-game
 luv luaurc my-game
+luv types my-game
 ```
 
 ## luv init
@@ -19,7 +20,7 @@ luv init [path] [--name <name>]
 
 Makes a new project in `path`. The default path is the current folder. The default name is the folder name.
 
-Running it on an existing project updates `types.d.luau`, `native/luv.h` and `native/luv.rs` to match your version of luv. It never changes `build.toml`, your scripts or your assets. Each line of output shows what happened to a file:
+Running it on an existing project updates `types.d.luau`, `native/luv.h` and `native/luv.rs` to match your version of luv. It never changes `build.toml`, your scripts or your assets. `types.d.luau` is built from nothing each time, out of the engine types and every plugin type file. See [Type files](../manual/native-plugins.md#type-files). Each line of output shows what happened to a file:
 
 | Mark | Meaning |
 | --- | --- |
@@ -95,6 +96,24 @@ Updated C:\my-game\.luaurc
 | `-` | The container is gone, so luv took the alias out. |
 
 When nothing changed it says the file is already up to date. See [Scripts and modules](../manual/scripts.md#aliases-luv-writes-for-you).
+
+## luv types
+
+```shell
+luv types [path]
+```
+
+Writes `types.d.luau` without building anything. `luv typegen` does the same. It starts from the engine types and folds in every `.d.luau` file in `native/`, in your project and in each container. `luv init`, `luv test` and `luv build` already do this, so you only need the command when you want the file updated on its own, such as right after you add a type file and want your editor to see it.
+
+It prints the file it wrote and the type files it read:
+
+```shell
+Updated C:\my-game\types.d.luau (2 plugin type files)
+  + native/physics.d.luau
+  + packs/tools/native/tools.d.luau
+```
+
+When nothing changed it says the file is already up to date. See [Type files](../manual/native-plugins.md#type-files).
 
 ## luv --version
 

@@ -46,6 +46,8 @@ struct VertexOutput {
 
 const NO_OBJECT: u32 = 0xffffffffu;
 const NO_SHAPE: u32 = 0xffffffffu;
+const CUSTOM_SHAPE: u32 = 0x80000000u;
+const CUSTOM_OFFSET: u32 = 0x7fffffu;
 
 const SHAPE_RECTANGLE: u32 = 0u;
 const SHAPE_CIRCLE: u32 = 1u;
@@ -68,6 +70,7 @@ const KIND_TEXT: u32 = 4u;
 @group(0) @binding(3) var image_sampler: sampler;
 @group(0) @binding(4) var<storage, read> objects: array<Object>;
 @group(0) @binding(5) var backdrop: texture_2d<f32>;
+@group(0) @binding(6) var<storage, read> outlines: array<vec2<f32>>;
 
 var<private> SHAPE_POINTS: array<vec2<f32>, 33> = array<vec2<f32>, 33>(
     vec2<f32>(-0.5, -0.5),
@@ -105,7 +108,14 @@ var<private> SHAPE_POINTS: array<vec2<f32>, 33> = array<vec2<f32>, 33>(
     vec2<f32>(-0.20710678, -0.5),
 );
 
+fn custom_shape(shape: u32) -> bool {
+    return (shape & CUSTOM_SHAPE) != 0u && shape != NO_SHAPE;
+}
+
 fn shape_range(shape: u32) -> vec2<u32> {
+    if custom_shape(shape) {
+        return vec2<u32>(shape & CUSTOM_OFFSET, (shape >> 23u) & 0xffu);
+    }
     switch shape {
         case 0u: {
             return vec2<u32>(0u, 4u);
@@ -135,7 +145,11 @@ fn shape_range(shape: u32) -> vec2<u32> {
 }
 
 fn shape_point(shape: u32, index: u32, size: vec2<f32>) -> vec2<f32> {
-    return SHAPE_POINTS[shape_range(shape).x + index] * size;
+    let range = shape_range(shape);
+    if custom_shape(shape) {
+        return outlines[range.x + index] * size;
+    }
+    return SHAPE_POINTS[range.x + index] * size;
 }
 
 fn rotate2d(value: vec2<f32>, angle: f32) -> vec2<f32> {
@@ -173,9 +187,9 @@ fn shape_distance(shape: u32, size: vec2<f32>, point: vec2<f32>) -> f32 {
     }
     var nearest = 1e30;
     var sign = 1.0;
-    var previous = SHAPE_POINTS[range.x + range.y - 1u] * size;
+    var previous = shape_point(shape, range.y - 1u, size);
     for (var index = 0u; index < range.y; index++) {
-        let current = SHAPE_POINTS[range.x + index] * size;
+        let current = shape_point(shape, index, size);
         let edge = previous - current;
         let offset = point - current;
         let t = clamp(dot(offset, edge) / max(dot(edge, edge), 1e-12), 0.0, 1.0);

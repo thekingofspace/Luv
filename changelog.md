@@ -1,24 +1,24 @@
-# 0.1.5
+# 1.7
 
-The first release of luv.
+## Raycasts and queries
 
-## Added
+- Raycasts and queries follow the shape you drew, even when it caves in.
+- A RenderableShape can take its own outline of points.
+- A RenderableImage can skip its clear pixels in queries, one frame of a sheet at a time.
+- The CPU and the GPU now run the same test, so both paths give the same answer.
 
-- Containers get an alias in `.luaurc`. luv writes them when you test, build or package.
-- `luv luaurc` updates that file on its own. `luv aliases` is the same command.
-- Set `aliases = false` in the `[build]` table of `build.toml` to turn it off.
+## Plugins
 
-## Faster
-
-- Higher frame rates all round. A scene of 5000 moving objects went from 125 to 178 frames a second.
-- Steadier frame timing. A cap of 60 or 144 now lands on target.
-- Setting a value that is already there costs nothing.
-- Reading a property is about twice as fast.
-
-## Fixed
-
-- Closing a window lets go of the handlers bound to it.
-- Destroying a Callback keeps its address safe for plugins that still hold it.
-- Destroying a socket closes it right away. `IsOpen` turns false and sending raises an error.
-- Destroying a Child closes its three pipes.
-- Destroying a Library lets go of its Exports table.
+- Plugins can add a service. It becomes a name for `import`, with its own functions and values.
+- Plugins can put a `.d.luau` file in `native/`. luv folds every one into `types.d.luau`.
+- `luv types` rebuilds that file on its own. `luv typegen` is the same command.
+- A container can ship a type file the same way.
+- Plugins can read and write engine objects, call their methods and make new ones.
+- Plugins can reach a window and its APIs, so they can make a renderable and hand it to Luau.
+- Plugins can make signals, bind their own handlers to one, and fire one from any thread.
+- Plugins can hand Luau a function of their own, with data of their own behind it.
+- Plugins can set and read globals, and make tables.
+- Plugins can push a buffer, so they can make sound and hand it straight over.
+- Plugins can run code on a timer on the game thread, and cancel it later.
+- `Library:GetServices` lists the services a library added.
+- A static property with a setter can now be written from Luau.

@@ -229,3 +229,80 @@ fn discovers_the_workspace_from_a_subdirectory() {
     let project = Project::discover(&dir.path().join("src").join("shared")).unwrap();
     assert_eq!(project.root, dir.path());
 }
+
+#[test]
+fn init_fuses_plugin_type_files_into_the_game_types() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    project::init(root, None).unwrap();
+
+    write(
+        root,
+        "native/physics.d.luau",
+        r#"export type Body = {
+	Mass: number,
+	Push: (self: Body, force: UDim) -> (),
+}
+
+export type Physics_API = {
+	Gravity: number,
+	AddBody: (mass: number) -> Body,
+}
+
+export type Imports = {
+	Physics: Physics_API,
+}
+
+export type WindowAPIs = {
+	Physics: Physics_API,
+}
+"#,
+    );
+    write(
+        root,
+        "packs/tools/container.toml",
+        "[container]\nname = \"Tools\"\nmain = \"./init.luau\"\n",
+    );
+    write(root, "packs/tools/init.luau", "return {}\n");
+    write(
+        root,
+        "packs/tools/native/tools.d.luau",
+        "export type Tools_API = {\n\tOpen: () -> boolean,\n}\n\nexport type Imports = {\n\tTools: Tools_API,\n}\n",
+    );
+
+    let report = project::init(root, None).unwrap();
+    assert_eq!(report.updated, ["types.d.luau"]);
+
+    let types = fs::read_to_string(root.join("types.d.luau")).unwrap();
+    assert!(types.contains("\t-- from native/physics.d.luau\n\tPhysics: Physics_API,\n"));
+    assert!(types.contains("\t-- from packs/tools/native/tools.d.luau\n\tTools: Tools_API,\n"));
+    assert!(types.contains("-- luv plugin types from native/physics.d.luau"));
+    assert!(types.contains("-- end of packs/tools/native/tools.d.luau"));
+    assert!(types.contains("export type Physics_API = {"));
+    assert!(types.contains("export type Tools_API = {"));
+    assert!(types.contains("declare import: <K>(name: keyof<Imports> & K) -> index<Imports, K>"));
+    assert_eq!(types.matches("export type Imports = {").count(), 1);
+    assert_eq!(types.matches("export type WindowAPIs = {").count(), 1);
+    assert!(types.contains("\tWindow: Window_API,\n\t-- from native/physics.d.luau"));
+    assert!(types.contains("\tSound: Sound_API,\n\t-- from native/physics.d.luau"));
+
+    let project = Project::load(root).unwrap();
+    assert!(!luv::typegen::sync(&project).unwrap().changed);
+
+    fs::remove_file(root.join("native/physics.d.luau")).unwrap();
+    let report = luv::typegen::sync(&project).unwrap();
+    assert!(report.changed);
+    assert_eq!(report.sources, ["packs/tools/native/tools.d.luau"]);
+    let types = fs::read_to_string(root.join("types.d.luau")).unwrap();
+    assert!(!types.contains("Physics_API"));
+    assert!(types.contains("Tools_API"));
+}
+
+#[test]
+fn a_workspace_without_plugin_types_gets_the_plain_engine_types() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    project::init(root, None).unwrap();
+    let types = fs::read_to_string(root.join("types.d.luau")).unwrap();
+    assert_eq!(types, project::TYPES_TEMPLATE);
+}

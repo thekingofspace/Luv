@@ -531,6 +531,9 @@ impl Library {
             .await
             .map_err(|_| runtime(format!("loading '{path}' stopped unexpectedly")))?
             .map_err(runtime)?;
+        for (service, table) in exports.services(&lua)? {
+            crate::runtime::imports::provide(&lua, &service, Value::Table(table))?;
+        }
         let mut base = BaseGameObject::new(Self::CLASS_NAME);
         base.set_name(name);
         lua.create_userdata(Library {
@@ -597,6 +600,10 @@ impl UserData for Library {
 
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         Self::add_base_methods(methods);
+        methods.add_method("GetServices", |_, this, ()| {
+            this.base.ensure_alive()?;
+            Ok(this.exports.service_names())
+        });
         methods.add_method("HasSymbol", |_, this, name: String| Ok(this.symbol(&name)?.is_some()));
         methods.add_method("GetSymbol", |_, this, name: String| this.require(&name));
         methods.add_method(

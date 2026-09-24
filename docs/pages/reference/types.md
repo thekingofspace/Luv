@@ -4,6 +4,8 @@ Every type in `types.d.luau` is listed here, with what it inherits and where it 
 
 The Inherits column links to the parent type. A type gets every member of its parent.
 
+luv writes `types.d.luau` from the types of the engine plus every plugin type file in your project and its containers. A plugin adds its own types at the end of the file, and its own names to `Imports` and `WindowAPIs`. Those are not listed here. See [Type files](../manual/native-plugins.md#type-files).
+
 ## Basics
 
 | Type | Inherits | What it is |

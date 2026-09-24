@@ -150,6 +150,7 @@ A container can have its own `native/` folder. It works like the `native/` folde
 - The container stores the file names of its plugins. Read them from `ContainerLibrary.Natives`.
 - Load them with [DLL.Load](../reference/dll.md) like any other plugin.
 - No two plugins in the game and its containers can have the same name.
+- A `.d.luau` file in that folder is a type file. luv folds it into the `types.d.luau` of the game, so a container can ship a plugin and its types together. See [Type files](native-plugins.md#type-files).
 
 ```c title="expansion/native/bonus.c"
 #include "luv.h"
