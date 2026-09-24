@@ -717,6 +717,8 @@ export type Asset = BaseGameObject & {
 export type Asset_API = {
 	Load: (path: string) -> Asset,
 	LoadString: (path: string) -> string,
+	FromBytes: (name: string, data: Bytes) -> Asset,
+	FromBase64: (name: string, text: string) -> Asset,
 }
 
 export type Dirs = {
@@ -1872,7 +1874,16 @@ export type Imports = {
 	Window: Window_API,
 }
 
+export type ExternalModule = BaseGameObject & {
+	Path: string,
+	Module: string,
+	IsLoaded: boolean,
+	Fetch: (self: ExternalModule) -> any,
+	Drop: (self: ExternalModule) -> boolean,
+}
+
 declare import: <K>(name: keyof<Imports> & K) -> index<Imports, K>
+declare function ECall(path: string): ExternalModule
 
 declare enum: Enums
 declare udim: UDim_API

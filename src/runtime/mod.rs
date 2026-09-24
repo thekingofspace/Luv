@@ -172,6 +172,7 @@ impl Runtime {
         globals.set(HOOK, lua.create_function(parallel_hook)?)?;
         scheduler::install_coroutine_library(&lua)?;
         datatypes::install(&lua)?;
+        crate::objects::external::install(&lua)?;
 
         let messenger = lua.create_userdata(Messenger::new(engine.bus().clone()))?;
         let heartbeat = lua.create_userdata(

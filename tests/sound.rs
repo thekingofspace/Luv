@@ -1068,3 +1068,40 @@ results.right = heard.right
     assert!(number(&results, "left") > 0.2);
     assert!(number(&results, "right") > 0.2);
 }
+
+#[tokio::test]
+async fn a_sideloaded_asset_plays_like_one_from_the_assets_folder() {
+    let (outcome, _) = run_sound(
+        vec![("assets/tone.wav", tone(375.0, 0.4, 0.5))],
+        &script(
+            r#"
+local Asset = import("Asset")
+
+local bytes = Asset.LoadString("tone.wav")
+local sideloaded = Asset.FromBytes("copy.wav", bytes)
+
+local node = Sound:SoundNode(sideloaded, { Name = "Sideloaded" })
+local speaker = Sound:ToSpeaker()
+node.Input:Link(speaker.Output)
+
+results = {
+    class = node.ClassName,
+    name = node.Name,
+    channels = node.Channels,
+    rate = node.SampleRate,
+    seconds = node.Length,
+    assetSize = sideloaded.Size,
+}
+"#,
+        ),
+    )
+    .await;
+    outcome.assert_clean();
+    let results: Table = outcome.global("results");
+    assert_eq!(results.get::<String>("class").unwrap(), "SoundNode");
+    assert_eq!(results.get::<String>("name").unwrap(), "Sideloaded");
+    assert_eq!(results.get::<f64>("channels").unwrap(), 1.0);
+    assert!(results.get::<f64>("assetSize").unwrap() > 100.0);
+    let seconds = results.get::<f64>("seconds").unwrap();
+    assert!((seconds - 0.4).abs() < 0.05, "expected about 0.4 seconds, got {seconds}");
+}

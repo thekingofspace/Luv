@@ -637,6 +637,25 @@ These functions call back into Luau. Keep them short. A long one holds up every 
 | `arg_value(call, index, out)` | `int32_t` | Writes the argument at `index` into `out`. Returns `LUV_OK`, or `LUV_OUT_OF_RANGE` with a kind of `LUV_KIND_NONE`. Works from any thread. |
 | `push_value(call, value)` | nothing | Pushes a `LuvValue` as a result. NULL pushes `nil`. Works from any thread. |
 | `push_buffer(call, length)` | `void*` | Pushes a Luau `buffer` of `length` bytes and returns memory to fill. The bytes start at zero. The memory lives until your function returns. Returns NULL when the length does not fit. Works from any thread. |
+| `push_asset(call, name, data, length)` | `int32_t` | Copies `length` bytes and pushes them as an [Asset](asset.md), without touching the `assets` folder. Returns `LUV_OK`, or a code below 0 and fails the call. Works from any thread. |
+
+`push_asset` is how a plugin hands Luau a picture it made or fetched. Give the name a real extension, like `avatar.png`, because luv reads the format from the bytes first and falls back to the name. The Asset works anywhere one from [Asset.Load](asset.md#load) does, so a [RenderableImage](renderableimage.md) can take it straight.
+
+```c
+static void badge(LuvCall* call) {
+    uint64_t length = 0;
+    const unsigned char* bytes = build_png(&length);
+    api->push_asset(call, "badge.png", bytes, length);
+}
+```
+
+```luau
+local DLL = import("DLL")
+
+local plugin = DLL.Load("./badges")
+local image = plugin.Exports.badge()
+Renderable.new("RenderableImage", { Image = image, Position = udim.new(40, 40) })
+```
 
 `arg_value` gives a `handle` for a table, a function or an engine object. That handle is yours, so `release` it when you are done.
 

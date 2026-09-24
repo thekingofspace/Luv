@@ -185,6 +185,7 @@ typedef struct LuvApi {
     int32_t (*post_write)(LuvRef* target, const char* name, const LuvValue* value);
     LuvTask* (*schedule)(LuvCall* call, const char* name, LuvFunction function, void* data, double seconds, uint32_t flags);
     void (*cancel)(LuvTask* task);
+    int32_t (*push_asset)(LuvCall* call, const char* name, const void* data, uint64_t length);
 } LuvApi;
 
 static inline LuvValue luv_nil(void) {

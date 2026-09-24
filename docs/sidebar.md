@@ -41,6 +41,7 @@
 - [Color](pages/reference/color.md)
 - [Enums](pages/reference/enums.md)
 - [BaseGameObject](pages/reference/basegameobject.md)
+- [ExternalModule](pages/reference/externalmodule.md)
 - [Signal](pages/reference/signal.md)
 - [Messenger](pages/reference/messenger.md)
 - [Bulk](pages/reference/bulk.md)

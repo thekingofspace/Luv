@@ -75,6 +75,29 @@ An unknown name raises an error that lists every name:
 
 A native plugin can add a name of its own, called a service. It joins the list when [DLL.Load](dll.md#load) finishes, so load the library first. See [Services](native-c.md#services).
 
+### ECall
+
+```luau
+ECall(path: string)
+```
+
+Reads a Luau file from outside the game, compiles it and returns an [ExternalModule](externalmodule.md). Nothing in the file runs yet. This yields the calling coroutine while the file is read.
+
+Use it for mods and for anything a player drops in after the game shipped. The file is not copied into the game and nothing is written to disk. luv keeps the compiled code, and later the value the file returned, and that is all.
+
+An absolute path is used as it is. A relative path is looked for in the game folder.
+
+```luau
+local handle = ECall("mods/greeter.luau")
+local greeter = handle:Fetch()
+print(greeter.greet("world"))
+handle:Drop()
+```
+
+Call it with the same path twice and both handles share one value, so a module is only ever run once until you drop it. [Drop](externalmodule.md#drop) forgets that value, and it is worth reading [Dropping is not unloading](externalmodule.md#dropping-is-not-unloading) before you use it, because anything already holding the module keeps it.
+
+A file loaded this way can `import` any luv library and can `ECall` other files. It cannot `require` the scripts of the game, because it does not live in the game's files.
+
 ### print
 
 ```luau

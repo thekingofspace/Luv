@@ -1,4 +1,4 @@
-mod asset;
+pub(crate) mod asset;
 mod bulk;
 pub mod codec;
 mod container;

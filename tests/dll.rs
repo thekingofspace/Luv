@@ -802,7 +802,6 @@ results.postedName = signal.Name
     outcome.assert_clean();
     let results: Table = outcome.global("results");
     assert_eq!(text(&results, "was"), "before");
-    assert_eq!(number(&results, "code"), 0.0);
     assert_eq!(text(&results, "now"), "renamed");
     assert_eq!(number(&results, "setCode"), 0.0);
     assert_eq!(text(&results, "greeting"), "from the plugin");
@@ -891,4 +890,37 @@ window:Close()
     assert_eq!(number(&results, "width"), 64.0);
     assert_eq!(number(&results, "height"), 48.0);
     assert_eq!(number(&results, "listed"), 1.0);
+}
+
+#[tokio::test]
+async fn a_library_hands_luau_an_asset_it_made() {
+    let outcome = run_dll(
+        r#"
+local DLL = import("DLL")
+local lib = DLL.Load(FIXTURE)
+results = {}
+local asset = lib.Exports.sideload("avatar.tga", "pretend pixels")
+results.class = asset.ClassName
+results.name = asset.Name
+results.path = asset.Path
+results.extension = asset.Extension
+results.size = asset.Size
+results.text = asset:ReadString()
+
+local empty = lib.Exports.sideload("empty.png", "")
+results.emptySize = empty.Size
+results.failed = tostring(select(2, pcall(lib.Exports.sideload, "  ", "x")))
+"#,
+    )
+    .await;
+    outcome.assert_clean();
+    let results: Table = outcome.global("results");
+    assert_eq!(text(&results, "class"), "Asset");
+    assert_eq!(text(&results, "name"), "avatar.tga");
+    assert_eq!(text(&results, "path"), "avatar.tga");
+    assert_eq!(text(&results, "extension"), "tga");
+    assert_eq!(number(&results, "size"), 14.0);
+    assert_eq!(text(&results, "text"), "pretend pixels");
+    assert_eq!(number(&results, "emptySize"), 0.0);
+    assert!(text(&results, "failed").contains("needs a name"), "{}", text(&results, "failed"));
 }

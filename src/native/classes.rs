@@ -563,6 +563,7 @@ pub enum Out {
     This,
     Pointer(usize),
     Ref(u64),
+    Asset(String, Vec<u8>),
 }
 
 pub struct Call {
@@ -695,6 +696,7 @@ pub(super) fn convert(lua: &Lua, output: Out, values: &[Value], this: Option<&Va
         Out::Number(number) => Value::Number(number),
         Out::Text(bytes) => Value::String(lua.create_string(bytes)?),
         Out::Bytes(bytes) => Value::Buffer(lua.create_buffer(bytes)?),
+        Out::Asset(name, bytes) => Value::UserData(crate::api::asset::from_bytes(lua, &name, bytes)?),
         Out::UDim([x, y, z]) => Value::UserData(lua.create_userdata(UDim::new(x, y, z))?),
         Out::Color([r, g, b, a]) => Value::UserData(lua.create_userdata(Color::new(r, g, b, a))?),
         Out::Object(object) => Value::UserData(wrap(lua, object)?),
@@ -1391,6 +1393,7 @@ pub struct Api {
     post_write: unsafe extern "C" fn(*mut RefHandle, *const c_char, *const RawValue) -> i32,
     schedule: unsafe extern "C" fn(*mut Call, *const c_char, Option<RawFunction>, *mut c_void, f64, u32) -> *mut Task,
     cancel: unsafe extern "C" fn(*mut Task),
+    push_asset: unsafe extern "C" fn(*mut Call, *const c_char, *const c_void, u64) -> i32,
 }
 
 pub static API: Api = Api {
@@ -1456,6 +1459,7 @@ pub static API: Api = Api {
     post_write: host::post_write,
     schedule: host::schedule,
     cancel: host::cancel,
+    push_asset: host::push_asset,
 };
 
 unsafe extern "C" fn define_service(registry: *mut Registry, info: *const RawServiceInfo) -> *const ClassShared {

@@ -1,5 +1,6 @@
 mod asset;
 mod child;
+pub(crate) mod external;
 pub mod file;
 mod input;
 mod messenger;
@@ -12,6 +13,7 @@ mod window;
 
 pub use asset::Asset;
 pub use child::{Child, ExitStatus};
+pub use external::External;
 pub use file::File;
 pub use messenger::Messenger;
 pub use net::{TcpServer, TcpSocket, UdpSocket, WebSocket};

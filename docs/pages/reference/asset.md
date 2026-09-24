@@ -65,6 +65,8 @@ Every error message starts with `cannot load asset '<path>': `. The rest of the 
 | --- | --- | --- |
 | [Load](#load)(path) | [Asset](#asset-object) | yes |
 | [LoadString](#loadstring)(path) | `string` | yes |
+| [FromBytes](#frombytes)(name, data) | [Asset](#asset-object) | no |
+| [FromBase64](#frombase64)(name, text) | [Asset](#asset-object) | no |
 
 ## Function descriptions
 
@@ -98,6 +100,56 @@ local Serde = import("Serde")
 local menu = Serde.Decode("json", Asset.LoadString("gui/menu"))
 print(menu.title)
 ```
+
+### FromBytes
+
+```luau
+Asset.FromBytes(name: string, data: Bytes): Asset
+```
+
+Makes an [Asset object](#asset-object) out of bytes you already have, without touching the `assets` folder. `data` is a string or a buffer. This is called sideloading. Use it for a picture you downloaded, unpacked or built yourself.
+
+`name` is not a path and nothing is read from disk. It names the asset and, more importantly, gives it an extension. luv reads the format from the bytes first and falls back to the extension, so give a real one like `avatar.png`.
+
+It errors with `a sideloaded asset needs a name, like 'avatar.png'` for an empty name, and with `the asset data must be a string or buffer` for anything else.
+
+```luau
+local Asset = import("Asset")
+local Net = import("Net")
+local Window = import("Window")
+
+local window = Window.new({ Title = "Sideload" })
+local Renderable = window:GetAPI("Renderable")
+
+local reply = Net.Request({ url = "https://example.com/badge.png" })
+local badge = Asset.FromBytes("badge.png", reply.body)
+Renderable.new("RenderableImage", { Image = badge, Position = udim.new(100, 100) })
+```
+
+### FromBase64
+
+```luau
+Asset.FromBase64(name: string, text: string): Asset
+```
+
+The same as [FromBytes](#frombytes), with the bytes written as base64 text. Spaces and new lines in the text are ignored, and both the plain and the URL safe alphabets work.
+
+A data URL works too. luv takes everything after `;base64,` so you can paste one straight in.
+
+It errors with `the text is not valid base64` when the text does not decode.
+
+```luau
+local Asset = import("Asset")
+
+local DOT = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVR4nGP4z8DwHwyBNBgAAEnICff5q7YNAAAAAElFTkSuQmCC"
+local icon = Asset.FromBase64("dot.png", DOT)
+print(icon.Size, icon.Extension)
+
+local same = Asset.FromBase64("dot.png", "data:image/png;base64," .. DOT)
+print(same.Size)
+```
+
+A sideloaded asset is not cached and not shared. Each call makes a new one. See [Caching](#caching).
 
 ## Asset object
 

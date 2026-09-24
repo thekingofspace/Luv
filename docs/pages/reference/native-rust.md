@@ -171,6 +171,7 @@ Each of these is an `unsafe fn`.
 | `call(call, target, name, args)` | `i32` | `call_member` with a slice of arguments and no results. |
 | `make(call, api, name, args)` | `*mut LuvRef` | `construct` with a slice of arguments. |
 | `send(target, name, args)` | `i32` | `post_call` with a slice of arguments. Works from any thread. |
+| `push_asset_bytes(call, name, bytes)` | `i32` | `push_asset` with a `&CStr` name and a byte slice. |
 
 These reach the engine, so they need the thread that runs Luau. See [The game thread](native-c.md#the-game-thread).
 

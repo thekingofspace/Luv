@@ -351,6 +351,7 @@ pub struct LuvApi {
     pub post_write: unsafe extern "C" fn(*mut LuvRef, *const c_char, *const LuvValue) -> i32,
     pub schedule: unsafe extern "C" fn(*mut LuvCall, *const c_char, LuvFunction, *mut c_void, f64, u32) -> *mut LuvTask,
     pub cancel: unsafe extern "C" fn(*mut LuvTask),
+    pub push_asset: unsafe extern "C" fn(*mut LuvCall, *const c_char, *const c_void, u64) -> i32,
 }
 
 impl LuvApi {
@@ -456,5 +457,9 @@ impl LuvApi {
 
     pub unsafe fn send(&self, target: *mut LuvRef, name: &CStr, args: &[LuvValue]) -> i32 {
         unsafe { (self.post_call)(target, name.as_ptr(), args.as_ptr(), args.len() as i32) }
+    }
+
+    pub unsafe fn push_asset_bytes(&self, call: *mut LuvCall, name: &CStr, bytes: &[u8]) -> i32 {
+        unsafe { (self.push_asset)(call, name.as_ptr(), bytes.as_ptr().cast(), bytes.len() as u64) }
     }
 }

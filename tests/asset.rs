@@ -138,3 +138,56 @@ table.insert(log, "main")
         assert_eq!(log, ["main", "loaded 30"]);
     }
 }
+
+#[tokio::test]
+async fn assets_can_be_sideloaded_from_bytes_and_base64() {
+    let dir = game(
+        r#"
+local Asset = import("Asset")
+local Crypto = import("Crypto")
+
+local DOT = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVR4nGP4z8DwHwyBNBgAAEnICff5q7YNAAAAAElFTkSuQmCC"
+
+local fromBytes = Asset.FromBytes("dot.png", Crypto.FromBase64(DOT))
+local fromText = Asset.FromBase64("dot.png", DOT)
+local fromUrl = Asset.FromBase64("dot.png", "data:image/png;base64," .. DOT)
+local fromBuffer = Asset.FromBytes("dot.png", buffer.fromstring(Crypto.FromBase64(DOT)))
+
+results = {
+    class = fromBytes.ClassName,
+    name = fromBytes.Name,
+    path = fromBytes.Path,
+    extension = fromBytes.Extension,
+    size = fromBytes.Size,
+    sameSize = fromText.Size == fromBytes.Size,
+    urlSize = fromUrl.Size,
+    bufferSize = fromBuffer.Size,
+    identical = fromText:ReadString() == fromBytes:ReadString(),
+    emptyName = tostring(select(2, pcall(Asset.FromBytes, "  ", "x"))),
+    badBase64 = tostring(select(2, pcall(Asset.FromBase64, "dot.png", "not base64 !!"))),
+    badData = tostring(select(2, pcall(Asset.FromBytes, "dot.png", 12))),
+}
+
+fromBytes:Destroy()
+results.destroyed = tostring(select(2, pcall(function() return fromBytes:ReadString() end)))
+"#,
+    );
+    for outcome in run_both(dir.path()).await {
+        outcome.assert_clean();
+        let results: Table = outcome.global("results");
+        let text = |key: &str| results.get::<String>(key).unwrap();
+        assert_eq!(text("class"), "Asset");
+        assert_eq!(text("name"), "dot.png");
+        assert_eq!(text("path"), "dot.png");
+        assert_eq!(text("extension"), "png");
+        assert_eq!(results.get::<usize>("size").unwrap(), 75);
+        assert!(results.get::<bool>("sameSize").unwrap());
+        assert_eq!(results.get::<usize>("urlSize").unwrap(), 75);
+        assert_eq!(results.get::<usize>("bufferSize").unwrap(), 75);
+        assert!(results.get::<bool>("identical").unwrap());
+        assert!(text("emptyName").contains("needs a name"), "{}", text("emptyName"));
+        assert!(text("badBase64").contains("not valid base64"), "{}", text("badBase64"));
+        assert!(text("badData").contains("must be a string or buffer"), "{}", text("badData"));
+        assert!(text("destroyed").contains("destroyed"), "{}", text("destroyed"));
+    }
+}

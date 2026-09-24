@@ -416,6 +416,30 @@ pub unsafe extern "C" fn push_buffer(call: *mut Call, length: u64) -> *mut c_voi
     }
 }
 
+pub unsafe extern "C" fn push_asset(call: *mut Call, name: *const c_char, data: *const c_void, length: u64) -> i32 {
+    let Some(call) = (unsafe { call.as_mut() }) else {
+        return INVALID;
+    };
+    let Some(name) = (unsafe { text(name) }) else {
+        call.fail("push_asset needs a name, like \"avatar.png\"".to_owned());
+        return INVALID;
+    };
+    let Ok(length) = usize::try_from(length) else {
+        call.fail("that asset is too large".to_owned());
+        return OUT_OF_RANGE;
+    };
+    if length > 0 && data.is_null() {
+        call.fail("push_asset was given no data".to_owned());
+        return INVALID;
+    }
+    let bytes = match length {
+        0 => Vec::new(),
+        length => unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) }.to_vec(),
+    };
+    call.results.push(Out::Asset(name, bytes));
+    OK
+}
+
 pub unsafe extern "C" fn get_import(call: *mut Call, name: *const c_char) -> *mut RefHandle {
     let Ok((call, lua)) = (unsafe { standing(call) }) else {
         return ptr::null_mut();

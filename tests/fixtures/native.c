@@ -760,6 +760,13 @@ static const LuvProperty service_properties[] = {
     {0},
 };
 
+static void export_sideload(LuvCall* call) {
+    uint64_t length = 0;
+    const char* name = api->opt_string(call, 0, "plugin.png", NULL);
+    const char* data = api->check_string(call, 1, &length);
+    api->push_asset(call, name, data, length);
+}
+
 static const LuvMethod exported[] = {
     {"version", export_version, LUV_INLINE},
     {"inline_thread", export_inline_thread, LUV_INLINE},
@@ -783,6 +790,7 @@ static const LuvMethod exported[] = {
     {"start_ticks", export_start_ticks, LUV_INLINE},
     {"stop_ticks", export_stop_ticks, LUV_INLINE},
     {"post_name", export_post_name, LUV_WORKER},
+    {"sideload", export_sideload, LUV_INLINE},
     {0},
 };
 
