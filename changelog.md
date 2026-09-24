@@ -7,6 +7,12 @@
 - A RenderableImage can skip its clear pixels in queries, one frame of a sheet at a time.
 - The CPU and the GPU now run the same test, so both paths give the same answer.
 
+## Files
+
+- `FS.tmpdir` makes a temporary folder you can write anything into.
+- Temporary files and folders now live in one folder that belongs to the game.
+- luv removes that folder when the game closes, so a game leaves nothing behind.
+
 ## Plugins
 
 - Plugins can add a service. It becomes a name for `import`, with its own functions and values.

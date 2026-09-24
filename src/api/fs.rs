@@ -4,7 +4,6 @@ use std::io::{self, Cursor};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mlua::{AnyUserData, FromLuaMulti, Function, IntoLuaMulti, Lua, MultiValue, Result, Table, Value};
@@ -16,8 +15,6 @@ use crate::project::is_script;
 use crate::runtime::aliases::{self, Resolved};
 use crate::runtime::{Engine, caller_path, module_of};
 use crate::vfs::{self, Vfs};
-
-static TEMPORARY: AtomicU64 = AtomicU64::new(0);
 
 enum Location {
     Ready(Resolved),
@@ -371,6 +368,19 @@ fn default_stream(lua: &Lua, paths: &Paths, defaults: &Rc<RefCell<Defaults>>, ou
     })
 }
 
+fn temporary(lua: &Lua, engine: &Arc<Engine>, directory: bool) -> Result<Function> {
+    let engine = engine.clone();
+    lua.create_async_function(move |_, ()| {
+        let engine = engine.clone();
+        async move {
+            let path = blocking(move || engine.temp_entry(directory))
+                .await
+                .map_err(|error| failure("create", if directory { "a temporary folder" } else { "a temporary file" }, error))?;
+            Ok(path.to_string_lossy().into_owned())
+        }
+    })
+}
+
 pub fn create(lua: &Lua, engine: &Arc<Engine>) -> Result<Table> {
     let paths = Paths { vfs: engine.vfs().clone() };
     let fs = lua.create_table()?;
@@ -693,25 +703,8 @@ pub fn create(lua: &Lua, engine: &Arc<Engine>) -> Result<Table> {
         })?,
     )?;
 
-    fs.set(
-        "tmpname",
-        lua.create_async_function(|_, ()| async move {
-            let directory = std::env::temp_dir();
-            loop {
-                let name = format!(
-                    "luv-{}-{}",
-                    std::process::id(),
-                    TEMPORARY.fetch_add(1, Ordering::Relaxed)
-                );
-                let path = directory.join(name);
-                match tokio::fs::OpenOptions::new().write(true).create_new(true).open(&path).await {
-                    Ok(_) => return Ok(path.to_string_lossy().into_owned()),
-                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                    Err(error) => return Err(failure("create", &path.to_string_lossy(), error)),
-                }
-            }
-        })?,
-    )?;
+    fs.set("tmpname", temporary(lua, engine, false)?)?;
+    fs.set("tmpdir", temporary(lua, engine, true)?)?;
 
     fs.set_readonly(true);
     Ok(fs)

@@ -336,3 +336,55 @@ async fn unknown_aliases_are_reported() {
         assert!(outcome.global::<String>("aliasError").contains("@nowhere is not a valid alias"));
     }
 }
+
+#[tokio::test]
+async fn temporary_files_and_folders_are_cleaned_up_when_the_game_closes() {
+    let outcome = run_disk(
+        r#"
+        local FS = import("FS")
+        local folder = FS.tmpdir()
+        local file = FS.tmpname()
+
+        assert(FS.isDir(folder) and not FS.isFile(folder))
+        assert(FS.isFile(file) and not FS.isDir(file))
+        assert(FS.metadata(file).size == 0)
+        assert(FS.tmpdir() ~= folder and FS.tmpname() ~= file)
+
+        FS.makeDir(folder .. "/deep")
+        FS.writeFile(folder .. "/deep/inside.txt", "data")
+        assert(FS.readFile(folder .. "/deep/inside.txt") == "data")
+
+        paths = { folder = folder, file = file, inside = folder .. "/deep/inside.txt" }
+        done = true
+        "#,
+    )
+    .await;
+    outcome.assert_clean();
+    assert!(outcome.global::<bool>("done"));
+
+    let paths: Table = outcome.global("paths");
+    let folder: String = paths.get("folder").unwrap();
+    let file: String = paths.get("file").unwrap();
+    let parent = |path: &str| {
+        std::path::Path::new(path)
+            .parent()
+            .map(|parent| parent.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
+    assert_eq!(parent(&folder), parent(&file), "temporary entries should share one folder");
+    assert!(
+        parent(&folder).starts_with(&std::env::temp_dir().to_string_lossy().into_owned()),
+        "the game folder should sit in the temp folder of the system, got {}",
+        parent(&folder)
+    );
+
+    for key in ["folder", "file", "inside"] {
+        let path: String = paths.get(key).unwrap();
+        assert!(!std::path::Path::new(&path).exists(), "{key} was left behind at {path}");
+    }
+    assert!(
+        !std::path::Path::new(&parent(&folder)).exists(),
+        "the game folder was left behind at {}",
+        parent(&folder)
+    );
+}

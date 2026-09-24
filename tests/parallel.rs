@@ -490,3 +490,34 @@ async fn errors_in_parallel_blocks_point_at_the_original_line() {
         assert!(message.contains("src/main.luau:5: boom 2"), "{message}");
     }
 }
+
+#[tokio::test]
+async fn parallel_blocks_share_the_temporary_folder_of_the_game() {
+    let dir = main_script(
+        r#"
+local FS = import("FS")
+local Messenger = import("Messenger")
+local mine = FS.tmpdir()
+
+Messenger:Subscribe("Made", function(theirs)
+    paths = { mine = mine, theirs = theirs }
+end)
+
+EnterParallel()
+local FS = import("FS")
+local Messenger = import("Messenger")
+Messenger:Fire("Made", FS.tmpdir())
+ExitParallel()
+"#,
+    );
+    for outcome in run_both(dir.path()).await {
+        outcome.assert_clean();
+        let paths: Table = outcome.global("paths");
+        let mine: String = paths.get("mine").unwrap();
+        let theirs: String = paths.get("theirs").unwrap();
+        let parent = |path: &str| std::path::Path::new(path).parent().unwrap().to_string_lossy().into_owned();
+        assert_eq!(parent(&mine), parent(&theirs), "a parallel block should use the folder of the game");
+        assert_ne!(mine, theirs);
+        assert!(!std::path::Path::new(&parent(&mine)).exists(), "the folder was left behind");
+    }
+}

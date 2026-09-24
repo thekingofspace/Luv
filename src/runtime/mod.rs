@@ -218,6 +218,8 @@ impl Runtime {
             })
             .await;
         self.engine.join().await;
+        let engine = self.engine.clone();
+        let _ = tokio::task::spawn_blocking(move || engine.clear_temp()).await;
     }
 
     pub(crate) async fn run_cluster(&self, mailbox: Mailbox, path: &str, unit: usize, captures: &[Packet]) {

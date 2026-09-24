@@ -383,7 +383,60 @@ print(info.kind, info.size, info.readonly)
 FS.tmpname(): string
 ```
 
-Creates a new empty file in the temp folder of the system and returns its full path. The name looks like `luv-<pid>-<number>`. Remove the file with [remove](#remove) when you are done.
+Creates a new empty file in the folder of the game and returns its full path. See [Temporary files](#temporary-files).
+
+```luau
+local FS = import("FS")
+
+local path = FS.tmpname()
+FS.writeFile(path, "scratch data")
+print(FS.readFile(path))
+```
+
+### tmpdir
+
+```luau
+FS.tmpdir(): string
+```
+
+Creates a new empty folder in the folder of the game and returns its full path. Write whatever you like inside it. See [Temporary files](#temporary-files).
+
+```luau
+local FS = import("FS")
+
+local folder = FS.tmpdir()
+FS.makeDir(folder .. "/frames")
+FS.writeFile(folder .. "/frames/1.raw", pixels)
+print(FS.readDir(folder)[1])
+```
+
+## Temporary files
+
+[tmpname](#tmpname) and [tmpdir](#tmpdir) both make their entry inside one folder that belongs to your game. luv makes that folder the first time you ask for something, inside the temp folder of the system, and names it `luv-<pid>-<number>`.
+
+```tree
+C:/Users/you/AppData/Local/Temp/
+└── luv-8124-0/
+    ├── 1
+    └── 2/
+        └── frames/
+            └── 1.raw
+```
+
+| Path | What it is |
+| --- | --- |
+| `luv-8124-0/` | The folder of the game. luv makes it and removes it. |
+| `1` | A file from `tmpname`. |
+| `2/` | A folder from `tmpdir`. |
+| `frames/1.raw` | A file you wrote inside that folder. |
+
+When the game closes, luv removes the whole folder of the game, with everything in it. So you do not have to clean up, and a game leaves nothing behind. You can still [remove](#remove) an entry yourself when you are done with it early.
+
+Parallel blocks share the folder of the game, so a path from one works in the others.
+
+[Process.dirs.temp](process.md#dirs) is the temp folder of the system itself. Nothing you write there is cleaned up for you.
+
+A game that is killed, rather than closed, leaves its folder behind. The system clears its temp folder in its own time.
 
 ## Metadata
 

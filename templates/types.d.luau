@@ -702,6 +702,7 @@ export type FS_API = {
 	isDir: (path: string) -> boolean,
 	metadata: (path: string) -> Metadata,
 	tmpname: () -> string,
+	tmpdir: () -> string,
 }
 
 export type Asset = BaseGameObject & {

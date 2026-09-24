@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::mem;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::thread::{self, JoinHandle};
 
@@ -16,6 +17,14 @@ use super::scheduler::Activity;
 use crate::audio::Pcm;
 use crate::vfs::{LayeredVfs, Vfs};
 use crate::window::WindowSystem;
+
+const TEMP_TRIES: u32 = 64;
+
+static TEMP_COUNT: AtomicU64 = AtomicU64::new(0);
+
+fn temp_name() -> String {
+    format!("luv-{}-{}", std::process::id(), TEMP_COUNT.fetch_add(1, Ordering::Relaxed))
+}
 
 type Setup = Arc<dyn Fn(&Lua) -> mlua::Result<()> + Send + Sync>;
 type Reporter = Arc<dyn Fn(&str) + Send + Sync>;
@@ -145,6 +154,7 @@ impl EngineBuilder {
             errors: AtomicUsize::new(0),
             exit_code: Mutex::new(None),
             threads: Mutex::new(Vec::new()),
+            temp: Mutex::new(None),
         })
     }
 }
@@ -166,6 +176,7 @@ pub struct Engine {
     errors: AtomicUsize,
     exit_code: Mutex<Option<i32>>,
     threads: Mutex<Vec<JoinHandle<()>>>,
+    temp: Mutex<Option<PathBuf>>,
 }
 
 impl Engine {
@@ -240,6 +251,59 @@ impl Engine {
 
     pub fn request_close(&self) {
         self.bus.begin_close();
+    }
+
+    pub fn temp_root(&self) -> io::Result<PathBuf> {
+        let mut held = self.temp.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(root) = held.as_ref()
+            && root.is_dir()
+        {
+            return Ok(root.clone());
+        }
+        let base = std::env::temp_dir();
+        for _ in 0..TEMP_TRIES {
+            let root = base.join(temp_name());
+            match fs::create_dir(&root) {
+                Ok(()) => {
+                    *held = Some(root.clone());
+                    return Ok(root);
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "a free name for the temporary folder could not be found",
+        ))
+    }
+
+    pub fn temp_entry(&self, directory: bool) -> io::Result<PathBuf> {
+        let root = self.temp_root()?;
+        for _ in 0..TEMP_TRIES {
+            let path = root.join(TEMP_COUNT.fetch_add(1, Ordering::Relaxed).to_string());
+            let made = if directory {
+                fs::create_dir(&path)
+            } else {
+                fs::OpenOptions::new().write(true).create_new(true).open(&path).map(drop)
+            };
+            match made {
+                Ok(()) => return Ok(path),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "a free name inside the temporary folder could not be found",
+        ))
+    }
+
+    pub fn clear_temp(&self) {
+        let root = self.temp.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(root) = root {
+            let _ = fs::remove_dir_all(root);
+        }
     }
 
     pub fn request_exit(&self, code: i32) {
@@ -331,5 +395,11 @@ impl Engine {
             }
         })
         .await;
+    }
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        self.clear_temp();
     }
 }

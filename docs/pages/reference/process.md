@@ -223,7 +223,7 @@ The table in `Process.dirs`. Each value is a full path. On Windows the paths use
 | `localAppData` | `string?` | The folder for local app data. `AppData\Local` on Windows, `~/.local/share` on Linux. |
 | `config` | `string?` | The folder for settings. `AppData\Roaming` on Windows, `~/.config` on Linux. |
 | `cache` | `string?` | The folder for cache files. `AppData\Local` on Windows, `~/.cache` on Linux. |
-| `temp` | `string` | The temp folder of the system. It is always set. |
+| `temp` | `string` | The temp folder of the system. It is always set. Nothing you write here is cleaned up for you. For scratch files that go away on their own, use [FS.tmpdir](fs.md#tmpdir). |
 | `documents` | `string?` | The documents folder of the user. |
 | `desktop` | `string?` | The desktop folder of the user. |
 | `downloads` | `string?` | The downloads folder of the user. |
