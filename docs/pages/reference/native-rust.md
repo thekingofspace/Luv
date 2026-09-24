@@ -218,6 +218,35 @@ pub extern "C" fn tint_render(context: *mut LuvRenderContext) {
 
 See [Render hooks](../manual/render-hooks.md) for a full example.
 
+## Sideloading assets
+
+`push_asset` copies bytes and pushes them as an [Asset](asset.md), so a plugin can hand Luau a picture, a sound, a font or a shader it built or fetched. [Sideloading assets](native-c.md#sideloading-assets) covers the rules, the naming and what each kind of asset feeds.
+
+`push_asset_bytes` is the Rust way in. It takes a `&CStr` name and a byte slice.
+
+```rust
+unsafe extern "C" fn portrait(call: *mut LuvCall) {
+    let api = api();
+    let png = build_png();
+    unsafe { api.push_asset_bytes(call, c"portrait.png", &png) };
+}
+
+unsafe extern "C" fn chime(call: *mut LuvCall) {
+    let api = api();
+    let wav = build_wav();
+    unsafe { api.push_asset_bytes(call, c"chime.wav", &wav) };
+}
+```
+
+```luau
+local plugin = DLL.Load("./media")
+
+Renderable.new("RenderableImage", { Image = plugin.Exports.portrait(), Position = udim.new(60, 60) })
+Sound:SoundNode(plugin.Exports.chime()):Play()
+```
+
+The bytes are copied while the call runs, so a `Vec<u8>` that goes out of scope right after is fine. It works from any thread, so a `LUV_PARALLEL` function can do the decoding off the game thread and push the result.
+
 ## Rust data in objects
 
 luv frees the memory of an object after `destroy` runs. It never runs `Drop` for your type. When your type owns heap data, like a `String` or a `Vec`, drop it in `destroy`:

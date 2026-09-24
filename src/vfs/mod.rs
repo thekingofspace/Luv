@@ -1,9 +1,11 @@
 mod dir;
 mod layered;
+mod memory;
 mod pak;
 
 pub use dir::DirVfs;
 pub use layered::LayeredVfs;
+pub use memory::MemoryVfs;
 pub use pak::{Codec, EntryKind, PackedFile, Pak, PakEntry, PakWriter};
 
 use std::io;

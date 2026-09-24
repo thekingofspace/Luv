@@ -138,7 +138,8 @@ impl EngineBuilder {
         let layered = Arc::new(LayeredVfs::new(self.vfs));
         let containers = Arc::new(Containers::new(layered.clone(), self.container_dirs));
         Arc::new(Engine {
-            vfs: layered,
+            vfs: layered.clone(),
+            layers: layered,
             containers,
             assets: AssetCache::default(),
             sounds: WeakCache::default(),
@@ -161,6 +162,7 @@ impl EngineBuilder {
 
 pub struct Engine {
     vfs: Arc<dyn Vfs>,
+    layers: Arc<LayeredVfs>,
     containers: Arc<Containers>,
     assets: AssetCache,
     sounds: WeakCache<Pcm>,
@@ -201,6 +203,10 @@ impl Engine {
 
     pub fn vfs(&self) -> &Arc<dyn Vfs> {
         &self.vfs
+    }
+
+    pub fn mount(&self, layer: Arc<dyn Vfs>) {
+        self.layers.mount(layer);
     }
 
     pub fn containers(&self) -> &Arc<Containers> {

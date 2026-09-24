@@ -20,7 +20,7 @@ luv writes `types.d.luau` from the types of the engine plus every plugin type fi
 | [EnumItem](enums.md#enumitem) | none | One item of an enum, with `Name`, `Value` and `EnumType`. |
 | `Enums` | none | The `enum` global. See [Enums](enums.md). |
 | `Imports` | none | Every name `import` accepts. See [import](globals.md#import). |
-| [ExternalModule](externalmodule.md) | [BaseGameObject](basegameobject.md) | A Luau file from outside the game, loaded with [ECall](globals.md#ecall). |
+| [ExternalModule](externalmodule.md) | [BaseGameObject](basegameobject.md) | A Luau file from outside the game, loaded with [ecall](globals.md#ecall). |
 | [Signal](signal.md) | [BaseGameObject](basegameobject.md) | An event you can bind handlers to and fire. |
 | `Signal_API` | none | The `Signal` library with `Signal.new`. See [Signal](signal.md). |
 | [Messenger](messenger.md) | [BaseGameObject](basegameobject.md) | Sends messages by topic between threads. |

@@ -75,28 +75,55 @@ An unknown name raises an error that lists every name:
 
 A native plugin can add a name of its own, called a service. It joins the list when [DLL.Load](dll.md#load) finishes, so load the library first. See [Services](native-c.md#services).
 
-### ECall
+### ecall
 
 ```luau
-ECall(path: string)
+ecall(path: string)
 ```
 
-Reads a Luau file from outside the game, compiles it and returns an [ExternalModule](externalmodule.md). Nothing in the file runs yet. This yields the calling coroutine while the file is read.
+Reads a folder from outside the game and returns an [ExternalModule](externalmodule.md). Every Luau file in it becomes bytecode, every other file is kept as it is, and the whole folder is mounted in the files of the game under `mods`. Nothing runs yet. This yields the calling coroutine while the folder is read.
 
-Use it for mods and for anything a player drops in after the game shipped. The file is not copied into the game and nothing is written to disk. luv keeps the compiled code, and later the value the file returned, and that is all.
+Use it for mods and for anything a player drops in after the game shipped. The folder is not copied and nothing is written to disk. luv holds the bytecode and the bytes in memory.
 
-An absolute path is used as it is. A relative path is looked for in the game folder.
+An absolute path is used as it is. A relative path is looked for in the game folder. A folder needs an `init.luau`, and a single `.luau` file works on its own.
 
 ```luau
-local handle = ECall("mods/greeter.luau")
-local greeter = handle:Fetch()
-print(greeter.greet("world"))
-handle:Drop()
+local hat = ecall("mods/hat")
+print(hat.Folder, hat.Files)
+local api = hat:Fetch()
 ```
 
-Call it with the same path twice and both handles share one value, so a module is only ever run once until you drop it. [Drop](externalmodule.md#drop) forgets that value, and it is worth reading [Dropping is not unloading](externalmodule.md#dropping-is-not-unloading) before you use it, because anything already holding the module keeps it.
+Because the folder is mounted, a mod can `require` its own scripts with `@self`, read its own files with [FS](fs.md) and load its own pictures and sounds with [Asset.Load](asset.md#load). See [What a mod can reach](externalmodule.md#what-a-mod-can-reach).
 
-A file loaded this way can `import` any luv library and can `ECall` other files. It cannot `require` the scripts of the game, because it does not live in the game's files.
+Call it with the same path twice and both handles share one value, so a mod is only ever run once until you drop it. [Drop](externalmodule.md#drop) forgets that value, and it is worth reading [Dropping is not unloading](externalmodule.md#dropping-is-not-unloading) first, because anything already holding the mod keeps it.
+
+### SetGlobal
+
+```luau
+SetGlobal(name: string, value: any)
+```
+
+Puts a value in the globals of Luau, where every script can read it by name. Use it to hand mods the functions and values of your game.
+
+The name uses letters, digits and underscores and cannot start with a digit. The value can be anything, a function, a table, a number.
+
+```luau
+SetGlobal("modApi", {
+	spawn = function(kind: string) end,
+	version = 3,
+})
+
+ecall("mods/hat"):Fetch()
+```
+
+```luau title="mods/hat/init.luau"
+print(modApi.version)
+modApi.spawn("hat")
+```
+
+The names luv owns cannot be replaced. `SetGlobal("import", ...)` errors with `'import' belongs to luv and cannot be replaced`. Those names are `ecall`, `import`, `require`, `enum`, `udim`, `color`, `SetGlobal` and `_G`.
+
+Each parallel block has its own globals, so a value set on the main thread is not there. Send it with [Messenger](messenger.md) or set it again inside the block.
 
 ### print
 

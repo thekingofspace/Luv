@@ -1875,15 +1875,19 @@ export type Imports = {
 }
 
 export type ExternalModule = BaseGameObject & {
-	Path: string,
-	Module: string,
+	Source: string,
+	Folder: string,
+	Entry: string,
+	Files: number,
 	IsLoaded: boolean,
+	GetFiles: (self: ExternalModule) -> { string },
 	Fetch: (self: ExternalModule) -> any,
 	Drop: (self: ExternalModule) -> boolean,
 }
 
 declare import: <K>(name: keyof<Imports> & K) -> index<Imports, K>
-declare function ECall(path: string): ExternalModule
+declare function ecall(path: string): ExternalModule
+declare function SetGlobal(name: string, value: any): ()
 
 declare enum: Enums
 declare udim: UDim_API

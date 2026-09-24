@@ -637,25 +637,7 @@ These functions call back into Luau. Keep them short. A long one holds up every 
 | `arg_value(call, index, out)` | `int32_t` | Writes the argument at `index` into `out`. Returns `LUV_OK`, or `LUV_OUT_OF_RANGE` with a kind of `LUV_KIND_NONE`. Works from any thread. |
 | `push_value(call, value)` | nothing | Pushes a `LuvValue` as a result. NULL pushes `nil`. Works from any thread. |
 | `push_buffer(call, length)` | `void*` | Pushes a Luau `buffer` of `length` bytes and returns memory to fill. The bytes start at zero. The memory lives until your function returns. Returns NULL when the length does not fit. Works from any thread. |
-| `push_asset(call, name, data, length)` | `int32_t` | Copies `length` bytes and pushes them as an [Asset](asset.md), without touching the `assets` folder. Returns `LUV_OK`, or a code below 0 and fails the call. Works from any thread. |
-
-`push_asset` is how a plugin hands Luau a picture it made or fetched. Give the name a real extension, like `avatar.png`, because luv reads the format from the bytes first and falls back to the name. The Asset works anywhere one from [Asset.Load](asset.md#load) does, so a [RenderableImage](renderableimage.md) can take it straight.
-
-```c
-static void badge(LuvCall* call) {
-    uint64_t length = 0;
-    const unsigned char* bytes = build_png(&length);
-    api->push_asset(call, "badge.png", bytes, length);
-}
-```
-
-```luau
-local DLL = import("DLL")
-
-local plugin = DLL.Load("./badges")
-local image = plugin.Exports.badge()
-Renderable.new("RenderableImage", { Image = image, Position = udim.new(40, 40) })
-```
+| `push_asset(call, name, data, length)` | `int32_t` | Copies `length` bytes and pushes them as an [Asset](asset.md). See [Sideloading assets](#sideloading-assets). |
 
 `arg_value` gives a `handle` for a table, a function or an engine object. That handle is yours, so `release` it when you are done.
 
@@ -773,6 +755,121 @@ static void start(LuvCall* call) {
     sim.task = api->schedule(call, "sim", beat, &sim, 1.0 / 60.0, LUV_INLINE);
 }
 ```
+
+## Sideloading assets
+
+An [Asset](asset.md#asset-object) is a name and some bytes. `push_asset` makes one out of bytes your plugin already holds, so a plugin can build a picture, unpack one, or fetch one and hand it to Luau. Nothing is read from the `assets` folder and nothing is written to disk.
+
+```c
+int32_t (*push_asset)(LuvCall* call, const char* name, const void* data, uint64_t length);
+```
+
+| Return value | When |
+| --- | --- |
+| `LUV_OK` | The asset was pushed. |
+| `LUV_INVALID` | `name` is NULL or empty, or `data` is NULL with a length above 0. |
+| `LUV_OUT_OF_RANGE` | The length does not fit in memory. |
+
+luv copies the bytes while the call runs, so the memory you pass only has to live that long. A length of 0 makes an empty asset.
+
+It works from any thread, so a `LUV_WORKER` or `LUV_PARALLEL` function can build the bytes off the game thread and push the result.
+
+### Naming it
+
+The name is not a path and nothing is looked up. It names the asset and carries an extension.
+
+Give it a real one. luv reads the format from the bytes first and falls back to the extension, so a picture with no header still lands in the right decoder. An empty name fails the call with `a sideloaded asset needs a name, like 'avatar.png'`.
+
+### What it works with
+
+The asset behaves like one from [Asset.Load](asset.md#load), so every part of luv that takes an asset takes this one.
+
+| What | Name it like | Where it goes |
+| --- | --- | --- |
+| A picture | `avatar.png`, `tile.qoi` | The `Image` of a [RenderableImage](renderableimage.md) |
+| A sound | `pickup.wav`, `music.ogg` | [Sound:SoundNode](sound-api.md#soundnode) |
+| A font | `title.ttf` | The `Font` of a [RenderableText](renderabletext.md) |
+| A shader | `water.wgsl` | [Shader.Compile](shader-library.md#compile) |
+| A window icon | `game.png` | The `Icon` of a [Window](window.md) |
+
+A sound works the same way a picture does. Push the bytes of a whole file, headers and all, and luv reads the format from them. A plugin that builds sound a frame at a time wants [push_buffer](#values) and a [FromBytes](frombytes.md) node instead, because that takes raw samples with no file around them.
+
+```c
+static void chime(LuvCall* call) {
+    uint64_t length = 0;
+    const unsigned char* wav = build_wav(&length);
+    api->push_asset(call, "chime.wav", wav, length);
+}
+```
+
+```luau
+local Sound = window:GetAPI("Sound")
+
+local chime = Sound:SoundNode(plugin.Exports.chime())
+chime.Input:Link(Sound:ToSpeaker().Output)
+chime:Play()
+```
+
+### An example
+
+This plugin turns raw pixels into a picture Luau can draw. The pixels are RGBA, so it writes a small TGA header in front of them and swaps red and blue, which is all that format asks for.
+
+```c
+#define HEADER 18
+
+static unsigned char picture[HEADER + 256 * 256 * 4];
+
+static uint64_t to_tga(uint32_t width, uint32_t height, const unsigned char* rgba) {
+    memset(picture, 0, HEADER);
+    picture[2] = 2;
+    picture[12] = (unsigned char)(width & 0xff);
+    picture[13] = (unsigned char)((width >> 8) & 0xff);
+    picture[14] = (unsigned char)(height & 0xff);
+    picture[15] = (unsigned char)((height >> 8) & 0xff);
+    picture[16] = 32;
+    picture[17] = 0x28;
+    unsigned char* out = picture + HEADER;
+    for (uint32_t index = 0; index < width * height; index++) {
+        const unsigned char* source = rgba + index * 4;
+        out[index * 4 + 0] = source[2];
+        out[index * 4 + 1] = source[1];
+        out[index * 4 + 2] = source[0];
+        out[index * 4 + 3] = source[3];
+    }
+    return (uint64_t)HEADER + (uint64_t)width * height * 4;
+}
+
+static void portrait(LuvCall* call) {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    const unsigned char* pixels = NULL;
+    if (!read_pixels(&width, &height, &pixels)) {
+        api->push_nil(call);
+        return;
+    }
+    api->push_asset(call, "portrait.tga", picture, to_tga(width, height, pixels));
+}
+```
+
+Luau draws it like any other picture:
+
+```luau
+local DLL = import("DLL")
+local Window = import("Window")
+
+local plugin = DLL.Load("./portraits")
+local window = Window.new({ Title = "Portrait" })
+local Renderable = window:GetAPI("Renderable")
+
+local image = plugin.Exports.portrait()
+if image then
+	Renderable.new("RenderableImage", { Image = image, Position = udim.new(100, 100) })
+end
+```
+
+A plugin that already holds an encoded picture, from a pack file or a download, pushes the bytes as they are and needs no header at all.
+
+Luau can sideload too, with [Asset.FromBytes](asset.md#frombytes) and [Asset.FromBase64](asset.md#frombase64). A mod loaded with [ecall](globals.md#ecall) gets its own files mounted instead, so it can use [Asset.Load](asset.md#load) as normal.
 
 ## Destructors and object lifetime
 

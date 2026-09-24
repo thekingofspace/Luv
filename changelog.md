@@ -12,8 +12,11 @@
 
 ## Mods
 
-- `ECall` reads a Luau file from outside the game, compiles it and hands back an `ExternalModule`.
-- `Fetch` runs it once and keeps what it returned. `Drop` forgets that, so the next `Fetch` runs it again.
+- `ecall` reads a folder from outside the game, compiles every Luau file in it and mounts the whole folder under `mods`.
+- A mod can require its own scripts with `@self`, read its own files with FS and load its own pictures and sounds with `Asset.Load`.
+- `Fetch` runs the entry once and keeps what it returned. `Drop` forgets that, so the next `Fetch` runs it again.
+- `GetFiles` lists what a mod brought with it.
+- `SetGlobal` puts a value in the globals of Luau, so a game can hand its own functions to mods.
 - Nothing is copied into the game and nothing is written to disk.
 
 ## Plugins
