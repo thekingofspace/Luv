@@ -10,6 +10,12 @@
 - `Asset.FromBase64` does the same from base64 text, and takes a data URL as it comes.
 - Plugins can hand Luau an asset with `push_asset`, so C can build a picture and pass it straight to a RenderableImage.
 
+## Drawing
+
+- `Renderable.WaitFor` yields until pictures and shaders are ready, so nothing shows up blank on its first frame.
+- Waiting on an asset before you make the renderable keeps its picture on the graphics card for every renderable that uses it.
+- Waiting on a renderable with shaders builds its pipeline, so the first frame it draws costs no more than the next.
+
 ## Mods
 
 - `ecall` reads a folder from outside the game, compiles every Luau file in it and mounts the whole folder under `mods`.

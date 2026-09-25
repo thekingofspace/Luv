@@ -6,7 +6,7 @@ use mlua::{AnyUserData, Lua, MultiValue, Result, Table, Value};
 use crate::datatypes::UDim;
 use crate::graphics::geometry::{Hit, Query, valid_query};
 use crate::graphics::protocol::ObjectId;
-use crate::objects::{Renderable, Scene};
+use crate::objects::{Asset, Renderable, Scene};
 
 fn runtime(message: impl Into<String>) -> mlua::Error {
     mlua::Error::runtime(message.into())
@@ -196,6 +196,42 @@ pub fn create(lua: &Lua, scene: &Rc<Scene>) -> Result<Table> {
                     results.push(raycast_result(&lua, userdata, hit)?)?;
                 }
                 Ok(results)
+            }
+        })?,
+    )?;
+
+    let owner = scene.clone();
+    api.set(
+        "WaitFor",
+        lua.create_async_function(move |_, given: MultiValue| {
+            let scene = owner.clone();
+            async move {
+                let values: Vec<Value> = given.into_iter().collect();
+                let mut objects = Vec::new();
+                let mut textures = Vec::new();
+                for (index, value) in values.iter().enumerate() {
+                    let spot = index + 1;
+                    let Value::UserData(userdata) = value else {
+                        return Err(runtime(format!(
+                            "WaitFor takes renderables and assets, got {} at #{spot}",
+                            value.type_name()
+                        )));
+                    };
+                    if let Ok(renderable) = userdata.borrow::<Renderable>() {
+                        objects.push(renderable.id());
+                        continue;
+                    }
+                    let Ok(asset) = userdata.borrow::<Asset>() else {
+                        return Err(runtime(format!(
+                            "WaitFor takes renderables and assets, got something else at #{spot}"
+                        )));
+                    };
+                    textures.push(scene.preload(asset.data()?, asset.path()));
+                }
+                scene.wait_until_settled(&objects).await;
+                scene.wait_for_textures(&textures).await;
+                scene.warm(&objects).await;
+                Ok(MultiValue::from_vec(values))
             }
         })?,
     )?;

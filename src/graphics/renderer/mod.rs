@@ -131,6 +131,10 @@ fn run(window: WindowId, target: RenderTarget, events: WindowEvents, receiver: R
                 RenderCommand::Capture(frame, reply) => {
                     let _ = reply.send(renderer.capture(&frame));
                 }
+                RenderCommand::Warm(objects, reply) => {
+                    renderer.warm(&objects);
+                    let _ = reply.send(());
+                }
             }
             next = receiver.try_recv().ok();
         }
@@ -2254,6 +2258,26 @@ impl Renderer {
                 gpu.queue.present(texture);
             }
             resize.presented(view.size);
+        }
+    }
+
+    fn warm(&mut self, objects: &[ObjectId]) {
+        let Some(graphics) = self.graphics.as_mut() else {
+            return;
+        };
+        let format = match &graphics.target {
+            Target::Surface(target) => target.config.format,
+            Target::Offscreen(_) => OFFSCREEN_FORMAT,
+        };
+        let device = graphics.gpu.device.clone();
+        for id in objects {
+            let Some(tracked) = self.scene.objects.get(id) else {
+                continue;
+            };
+            let Ok(Some(key)) = self.scene.custom_key(&tracked.snapshot, format) else {
+                continue;
+            };
+            let _ = graphics.pipelines.custom(&device, &graphics.engine, &key, &self.scene.shaders);
         }
     }
 

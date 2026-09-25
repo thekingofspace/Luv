@@ -86,6 +86,8 @@ pub struct Resources {
     masks: HashMap<TextureId, Arc<AlphaMask>>,
     mask_wanted: HashSet<TextureId>,
     mask_decode: Vec<(TextureId, Arc<[u8]>, String)>,
+    failed: HashSet<TextureId>,
+    pinned: HashSet<TextureId>,
 }
 
 fn key(data: &Arc<[u8]>) -> usize {
@@ -160,6 +162,24 @@ impl Resources {
 
     fn mask_ready(&mut self, id: TextureId, mask: AlphaMask) {
         self.masks.insert(id, Arc::new(mask));
+    }
+
+    pub fn pin(&mut self, id: TextureId) {
+        self.pinned.insert(id);
+    }
+
+    pub fn texture_failed(&mut self, id: TextureId) {
+        self.failed.insert(id);
+    }
+
+    pub fn texture_settled(&self, id: TextureId) -> bool {
+        if self.disabled || self.failed.contains(&id) {
+            return true;
+        }
+        self.texture_keys
+            .get(&id)
+            .and_then(|slot| self.textures.get(slot))
+            .is_none_or(|entry| entry.uploaded || entry.pixels.is_some())
     }
 
     fn texture_ready(&mut self, id: TextureId, pixels: Pixels) {
@@ -731,11 +751,71 @@ impl Scene {
                 };
                 match result {
                     Ok(pixels) => scene.state.borrow_mut().resources.texture_ready(id, pixels),
-                    Err(error) => reporter.report(mlua::Error::runtime(format!("cannot draw the image '{name}': {error}"))),
+                    Err(error) => {
+                        scene.state.borrow_mut().resources.texture_failed(id);
+                        reporter.report(mlua::Error::runtime(format!("cannot draw the image '{name}': {error}")));
+                    }
                 }
                 scene.decoding.set(scene.decoding.get() - 1);
                 scene.decoded.notify_waiters();
             });
+        }
+    }
+
+    pub fn preload(&self, data: Arc<[u8]>, name: &str) -> TextureId {
+        let id = {
+            let mut state = self.state.borrow_mut();
+            let id = state.resources.acquire_texture(data, name);
+            state.resources.pin(id);
+            id
+        };
+        self.spawn_decodes();
+        id
+    }
+
+    pub fn texture_settled(&self, id: TextureId) -> bool {
+        self.state.borrow().resources.texture_settled(id)
+    }
+
+    pub async fn wait_for_textures(&self, ids: &[TextureId]) {
+        loop {
+            let decoded = self.decoded.notified();
+            if ids.iter().all(|id| self.texture_settled(*id)) {
+                return;
+            }
+            decoded.await;
+        }
+    }
+
+    pub async fn warm(&self, ids: &[ObjectId]) {
+        if ids.is_empty() {
+            return;
+        }
+        self.flush();
+        let (sender, receiver) = oneshot::channel();
+        if self.send(RenderCommand::Warm(ids.to_vec(), sender)) {
+            let _ = receiver.await;
+        }
+    }
+
+    pub fn settled(&self, id: ObjectId) -> bool {
+        let mut state = self.state.borrow_mut();
+        let Some(entry) = state.entries.get_mut(id) else {
+            return true;
+        };
+        let Some(image) = entry.object.image.as_ref().map(|image| image.texture) else {
+            return true;
+        };
+        state.resources.texture_settled(image)
+    }
+
+    pub async fn wait_until_settled(&self, ids: &[ObjectId]) {
+        loop {
+            let decoded = self.decoded.notified();
+            if ids.iter().all(|id| self.settled(*id)) {
+                return;
+            }
+            decoded.await;
         }
     }
 

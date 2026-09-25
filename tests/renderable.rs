@@ -1306,3 +1306,114 @@ end)
     assert_pixel(cleared, 20, 50, [0, 0, 0, 255]);
     assert_pixel(cleared, 100, 50, [255, 0, 0, 255]);
 }
+
+#[tokio::test]
+async fn waitfor_holds_until_an_image_is_ready_to_draw() {
+    if Gpu::get().is_err() {
+        eprintln!("skipping a rendering test: no GPU");
+        return;
+    }
+    let dir = project(
+        r##"
+local Asset = import("Asset")
+local Window = import("Window")
+
+local window = Window.new({ Title = "Ready", Size = udim.new(40, 40), BackgroundColor = color.new(0, 0, 0, 1) })
+local Renderable = window:GetAPI("Renderable")
+
+results = {}
+
+local icon = Asset.Load("quad.png")
+results.assetBack = Renderable.WaitFor(icon) == icon
+
+local image = Renderable.new("RenderableImage", {
+    Image = icon,
+    Position = udim.new(20, 20),
+    Size = udim.new(40, 40),
+})
+capture(window, "ready")
+
+local shape = Renderable.new("RenderableShape", { Position = udim.new(20, 20), Size = udim.new(2, 2) })
+results.shapeIsInstant = Renderable.WaitFor(shape) == shape
+results.imageBack = Renderable.WaitFor(image) == image
+results.manyAtOnce = select("#", Renderable.WaitFor(icon, image, shape)) == 3
+results.badArgument = tostring(select(2, pcall(Renderable.WaitFor, 12)))
+
+window:Close()
+"##,
+    );
+    let run = run(dir.path(), true).await;
+    run.outcome.assert_clean();
+    let results: Table = run.outcome.global("results");
+    assert!(results.get::<bool>("assetBack").unwrap(), "WaitFor gives back what it was given");
+    assert!(results.get::<bool>("shapeIsInstant").unwrap());
+    assert!(results.get::<bool>("imageBack").unwrap());
+    assert!(results.get::<bool>("manyAtOnce").unwrap());
+    let message: String = results.get("badArgument").unwrap();
+    assert!(message.contains("WaitFor takes renderables and assets"), "{message}");
+
+    let capture = &run.captures["ready"];
+    let pixel = |x: u32, y: u32| {
+        let index = ((y * capture.width + x) * 4) as usize;
+        capture.rgba[index..index + 4].to_vec()
+    };
+    let corner = |x: u32, y: u32, channel: usize| {
+        let pixel = pixel(x, y);
+        let others: Vec<u8> = (0..3).filter(|index| *index != channel).map(|index| pixel[index]).collect();
+        assert!(
+            pixel[channel] > 200 && others.iter().all(|value| *value < 60),
+            "the image drew its own pixels on its first frame, got {pixel:?} at {x},{y}"
+        );
+    };
+    corner(6, 6, 0);
+    corner(33, 6, 1);
+    corner(6, 33, 2);
+}
+
+#[tokio::test]
+async fn waitfor_warms_a_shader_pipeline_before_it_draws() {
+    if Gpu::get().is_err() {
+        eprintln!("skipping a rendering test: no GPU");
+        return;
+    }
+    let dir = project(
+        r##"
+local Shader = import("Shader")
+local Window = import("Window")
+
+local window = Window.new({ Title = "Warm", Size = udim.new(40, 40), BackgroundColor = color.new(0, 0, 0, 1) })
+local Renderable = window:GetAPI("Renderable")
+
+local shader = Shader.Compile(Shader.Combine({ Shader.Prelude, [==[
+@vertex
+fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+    let corner = vec2<f32>(f32((0x32u >> index) & 1u), f32((0x2cu >> index) & 1u));
+    let world = vec2<f32>(4.0, 4.0) + corner * vec2<f32>(32.0, 32.0);
+    return vec4<f32>(world.x / frame.resolution.x * 2.0 - 1.0, 1.0 - world.y / frame.resolution.y * 2.0, 0.0, 1.0);
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 1.0, 1.0, 1.0);
+}
+]==] }, { Name = "warm" }))
+
+local painted = Renderable.new("Renderable", { Shaders = { shader }, VertexCount = 6 })
+
+local started = os.clock()
+Renderable.WaitFor(painted)
+warmSeconds = os.clock() - started
+
+capture(window, "warm")
+window:Close()
+"##,
+    );
+    let run = run(dir.path(), true).await;
+    run.outcome.assert_clean();
+    assert!(run.outcome.global::<f64>("warmSeconds") >= 0.0);
+
+    let capture = &run.captures["warm"];
+    let index = ((20 * capture.width + 20) * 4) as usize;
+    let pixel = &capture.rgba[index..index + 4];
+    assert_eq!(pixel, [0, 255, 255, 255], "the shader drew on the first frame after WaitFor");
+}

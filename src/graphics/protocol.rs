@@ -237,6 +237,7 @@ pub struct Capture {
 
 pub type QueryReply = oneshot::Sender<Result<Vec<Hit>, String>>;
 pub type CaptureReply = oneshot::Sender<Result<Capture, String>>;
+pub type WarmReply = oneshot::Sender<()>;
 
 pub enum RenderCommand {
     Delta(SceneDelta),
@@ -244,4 +245,5 @@ pub enum RenderCommand {
     Redraw,
     Query(Query, QueryReply),
     Capture(FrameInfo, CaptureReply),
+    Warm(Vec<ObjectId>, WarmReply),
 }

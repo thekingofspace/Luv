@@ -40,6 +40,7 @@ QueryPoint, QueryArea and QueryRadius return the topmost renderable first. That 
 | Function | Returns | Yields |
 | --- | --- | --- |
 | [new](#new)(className, config) | the new renderable | no |
+| [WaitFor](#waitfor)(...) | what it was given | yes |
 | [GetRenderables](#getrenderables)() | `{ Renderable }` | no |
 | [QueryPoint](#querypoint)(point, params) | `{ Renderable }` | yes |
 | [QueryArea](#queryarea)(center, size, rotation, params) | `{ Renderable }` | yes |
@@ -93,6 +94,61 @@ local ball = Renderable.new("RenderableShape", {
 	Color = color.new(1, 0.8, 0.2, 1),
 })
 ```
+
+### WaitFor
+
+```luau
+Renderable.WaitFor(...: Renderable | Asset): ...
+```
+
+Yields the calling coroutine until everything you pass is ready to draw, then gives back what it was given. Use it so nothing shows up blank on its first frame.
+
+Three things take time before a renderable looks right:
+
+| What | Why it waits |
+| --- | --- |
+| An [Asset](asset.md#asset-object) of a picture | The picture is decoded on another thread and sent to the graphics card. |
+| A [RenderableImage](renderableimage.md) | The same, for the picture it holds. |
+| A renderable with shaders | The graphics card builds the pipeline for it, which it otherwise does on the first frame it draws. |
+
+A [RenderableShape](renderableshape.md) and a [RenderableText](renderabletext.md) are ready as soon as you make them, so passing one costs nothing.
+
+Pass the asset before you make the renderable and it never draws blank:
+
+```luau
+local Asset = import("Asset")
+
+local icon = Asset.Load("icon.png")
+Renderable.WaitFor(icon)
+
+local badge = Renderable.new("RenderableImage", { Image = icon, Position = udim.new(80, 80) })
+```
+
+Waiting on an asset keeps its picture on the graphics card until the window closes, so every renderable made from that same asset later is ready straight away.
+
+Pass a renderable that already exists and it waits for whatever that one still needs. For one with shaders that also builds its pipeline, so the first frame it draws costs no more than the next.
+
+```luau
+local Shader = import("Shader")
+
+local water = Shader.Compile(Asset.Load("water.wgsl"))
+local surface = Renderable.new("Renderable", { Shaders = { water }, VertexCount = 6 })
+Renderable.WaitFor(surface)
+```
+
+Load a whole screen at once by passing everything together:
+
+```luau
+local icons = {}
+for _, name in { "sword", "shield", "potion" } do
+	icons[name] = Asset.Load(`icons/{name}.png`)
+end
+Renderable.WaitFor(icons.sword, icons.shield, icons.potion)
+```
+
+It errors with `WaitFor takes renderables and assets, got number at #1` for anything else.
+
+An asset that cannot be decoded stops the wait rather than holding it forever. The error is reported like other errors and the renderable draws blank.
 
 ### GetRenderables
 

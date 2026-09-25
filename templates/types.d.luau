@@ -984,6 +984,7 @@ export type Renderable_API = {
 	QueryRadius: (center: UDim, radius: number, params: QueryParams?) -> { Renderable },
 	Raycast: (origin: UDim, direction: UDim, params: QueryParams?) -> RaycastResult?,
 	RaycastAll: (origin: UDim, direction: UDim, params: QueryParams?) -> { RaycastResult },
+	WaitFor: <T...>(T...) -> T...,
 	GetRenderables: () -> { Renderable },
 }
 
