@@ -28,9 +28,34 @@ luv starts its audio engine the first time a window asks for the Sound API. The 
 | `SampleRate` | `number` | `48000` | The sample rate of the mixer in Hz. It changes to the rate of the default output device when that device opens. Read only. |
 | `DefaultDevice` | `string?` | none | The name of the default output device. `nil` when there is none. It can also be `nil` for a moment right after the first `GetAPI("Sound")`. Read only. |
 | `IsConnected` | `boolean` | `true` | `true` while an output device exists. luv checks about every 2 seconds. Read only. |
+| `LateBlocks` | `number` | `0` | How many times the sound card ran out of sound to play. Read only. See [When sound crackles](#when-sound-crackles). |
+| `SkippedBlocks` | `number` | `0` | How many times luv had no sound ready in time. Read only. See [When sound crackles](#when-sound-crackles). |
 | `ActivationChanged` | [Signal](signal.md)`<boolean>` | none | Fires when `IsConnected` changes. See [ActivationChanged](#activationchanged). Read only. |
 
 Setting `Volume` to NaN or infinity errors with `Volume must be a finite number`.
+
+## When sound crackles
+
+Sound is built in small blocks and handed to the sound card on a deadline. Miss the deadline and the card plays whatever it has, which is a click. A run of those is the crackle or static you hear.
+
+Two counters say whether that is happening and which side is late. Both only ever go up, and both stay at 0 on a healthy run.
+
+| Counter | What it means |
+| --- | --- |
+| `LateBlocks` | The sound card asked for sound and luv was still working, so the card played a gap. This is the machine running out of room. |
+| `SkippedBlocks` | luv could not reach the mixer in time and sent quiet instead. This is luv getting in its own way. |
+
+```luau
+local Sound = window:GetAPI("Sound")
+
+Process.Heartbeat:BindHandler("audio", function()
+	if Sound.LateBlocks > 0 or Sound.SkippedBlocks > 0 then
+		print(`sound is behind: {Sound.LateBlocks} late, {Sound.SkippedBlocks} skipped`)
+	end
+end)
+```
+
+`LateBlocks` going up while you record the screen, or while a lot of sound plays at once, is the machine being busy rather than a fault in your game. Fewer sounds at once, or a lighter recorder, gives the deadline more room.
 
 ## Functions
 

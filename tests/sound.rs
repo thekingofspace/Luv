@@ -1105,3 +1105,31 @@ results = {
     let seconds = results.get::<f64>("seconds").unwrap();
     assert!((seconds - 0.4).abs() < 0.05, "expected about 0.4 seconds, got {seconds}");
 }
+
+#[tokio::test]
+async fn the_sound_api_reports_dropped_audio_blocks() {
+    let (outcome, _) = run_sound(
+        tone_asset(),
+        &script(
+            r#"
+local node = Sound:SoundNode("tone.wav", { Looping = true })
+node.Input:Link(Sound:ToSpeaker().Output)
+node:Play()
+sleep(60)
+results = {
+    late = Sound.LateBlocks,
+    skipped = Sound.SkippedBlocks,
+    lateKind = type(Sound.LateBlocks),
+    skippedKind = type(Sound.SkippedBlocks),
+}
+"#,
+        ),
+    )
+    .await;
+    outcome.assert_clean();
+    let results: Table = outcome.global("results");
+    assert_eq!(results.get::<String>("lateKind").unwrap(), "number");
+    assert_eq!(results.get::<String>("skippedKind").unwrap(), "number");
+    assert_eq!(results.get::<f64>("late").unwrap(), 0.0, "a healthy run drops no blocks");
+    assert_eq!(results.get::<f64>("skipped").unwrap(), 0.0);
+}

@@ -365,6 +365,8 @@ impl UserData for SoundApi {
         fields.add_field_method_get("SampleRate", |_, this| Ok(this.graph()?.audio.rate()));
         fields.add_field_method_get("DefaultDevice", |_, this| Ok(this.graph()?.audio.device()));
         fields.add_field_method_get("IsConnected", |_, this| Ok(this.graph()?.audio.connected()));
+        fields.add_field_method_get("LateBlocks", |_, this| Ok(this.graph()?.audio.late()));
+        fields.add_field_method_get("SkippedBlocks", |_, this| Ok(this.graph()?.audio.skipped()));
         fields.add_field_method_get("ActivationChanged", |_, this| Ok(this.graph()?.activation.clone()));
     }
 

@@ -1401,6 +1401,8 @@ export type Sound_API = {
 	SampleRate: number,
 	DefaultDevice: string?,
 	IsConnected: boolean,
+	LateBlocks: number,
+	SkippedBlocks: number,
 	ActivationChanged: Signal<boolean>,
 	SoundNode: (self: Sound_API, asset: Asset | string, config: SoundNodeConfig?) -> SoundNode,
 	FromString: (self: Sound_API, data: string | buffer, config: SoundNodeConfig?) -> FromString,

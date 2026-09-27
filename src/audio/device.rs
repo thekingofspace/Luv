@@ -249,7 +249,11 @@ impl Host {
 
     fn check_errors(&mut self) {
         while let Ok((device, kind)) = self.errors.1.try_recv() {
-            if matches!(kind, ErrorKind::Xrun | ErrorKind::RealtimeDenied | ErrorKind::DeviceChanged) {
+            if matches!(kind, ErrorKind::Xrun | ErrorKind::RealtimeDenied) {
+                self.status.count_late();
+                continue;
+            }
+            if matches!(kind, ErrorKind::DeviceChanged) {
                 continue;
             }
             match device {
@@ -327,10 +331,14 @@ impl Host {
         lock(&self.renderer).set_rate(rate);
         self.status.rate.store(rate, Ordering::Release);
         let renderer = self.renderer.clone();
+        let status = self.status.clone();
         let fill = move |samples: &mut [f32]| match renderer.try_lock() {
             Ok(mut renderer) => renderer.render(samples, channels),
             Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner().render(samples, channels),
-            Err(TryLockError::WouldBlock) => samples.fill(0.0),
+            Err(TryLockError::WouldBlock) => {
+                status.count_skipped();
+                samples.fill(0.0);
+            }
         };
         let stream = open_stream(&device, supported, fill, self.errors.0.clone(), None)?;
         let name = name_of(&device);

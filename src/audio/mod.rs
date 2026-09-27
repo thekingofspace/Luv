@@ -212,6 +212,8 @@ pub trait Processor: Send {
 
 pub struct AudioStatus {
     rate: AtomicU32,
+    late: AtomicU32,
+    skipped: AtomicU32,
     graphs: AtomicUsize,
     connected: AtomicBool,
     device: Mutex<Option<String>>,
@@ -225,6 +227,8 @@ impl AudioStatus {
     fn new(simulated: Vec<String>) -> Self {
         Self {
             rate: AtomicU32::new(DEFAULT_RATE),
+            late: AtomicU32::new(0),
+            skipped: AtomicU32::new(0),
             graphs: AtomicUsize::new(0),
             connected: AtomicBool::new(true),
             device: Mutex::new(simulated.first().cloned()),
@@ -233,6 +237,22 @@ impl AudioStatus {
             simulated: Mutex::new(simulated),
             captures: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub fn count_late(&self) {
+        self.late.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn count_skipped(&self) {
+        self.skipped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn late_count(&self) -> u32 {
+        self.late.load(Ordering::Acquire)
+    }
+
+    fn skipped_count(&self) -> u32 {
+        self.skipped.load(Ordering::Acquire)
     }
 
     fn set_device(&self, device: Option<String>) {
@@ -320,6 +340,14 @@ impl AudioSystem {
 
     pub fn connected(&self) -> bool {
         self.status.connected.load(Ordering::Acquire)
+    }
+
+    pub fn late(&self) -> u32 {
+        self.status.late_count()
+    }
+
+    pub fn skipped(&self) -> u32 {
+        self.status.skipped_count()
     }
 
     pub fn subscribe(&self) -> mpsc::UnboundedReceiver<bool> {

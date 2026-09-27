@@ -16,6 +16,11 @@
 - Waiting on an asset before you make the renderable keeps its picture on the graphics card for every renderable that uses it.
 - Waiting on a renderable with shaders builds its pipeline, so the first frame it draws costs no more than the next.
 
+## Sound
+
+- `Sound.LateBlocks` and `Sound.SkippedBlocks` count the blocks that missed the deadline, so crackling can be told apart from a fault in the game.
+- luv no longer throws away the reports the sound card sends when it runs out of sound to play.
+
 ## Mods
 
 - `ecall` reads a folder from outside the game, compiles every Luau file in it and mounts the whole folder under `mods`.
