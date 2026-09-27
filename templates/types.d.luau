@@ -1896,9 +1896,61 @@ export type ExternalModule = BaseGameObject & {
 	Drop: (self: ExternalModule) -> boolean,
 }
 
+export type Promise = {
+	ClassName: string,
+	Status: string,
+	AndThen: (self: Promise, handler: (...any) -> ...any) -> Promise,
+	Catch: (self: Promise, handler: (reason: any) -> ...any) -> Promise,
+	Finally: (self: Promise, handler: (status: string) -> ...any) -> Promise,
+	Cancel: (self: Promise) -> boolean,
+	Await: (self: Promise) -> ...any,
+	AwaitStatus: (self: Promise) -> (string, ...any),
+}
+
+export type Promise_API = {
+	new: (body: (resolve: (...any) -> (), reject: (...any) -> (), ...any) -> ...any, ...any) -> Promise,
+	call: (body: (...any) -> ...any, ...any) -> Promise,
+	resolve: (...any) -> Promise,
+	reject: (...any) -> Promise,
+	all: (list: { any }) -> Promise,
+	race: (list: { any }) -> Promise,
+	delay: (seconds: number, ...any) -> Promise,
+	is: (value: any) -> boolean,
+}
+
+export type Switch_API = {
+	new: (
+		cases: { [string]: (...any) -> ...any },
+		fallback: ((key: string, ...any) -> ...any)?
+	) -> (key: string, ...any) -> ...any,
+}
+
+export type TaskFields = {
+	ClassName: string,
+	Exclusive: boolean,
+	Running: number,
+	Run: (self: Task, ...any) -> thread?,
+	Wait: (self: Task) -> (),
+}
+
+export type Task = typeof(setmetatable({} :: TaskFields, {} :: { __call: (Task, ...any) -> thread? }))
+
+export type Task_API = {
+	wait: (seconds: number?) -> number,
+	spawn: (target: ((...any) -> ...any) | thread, ...any) -> thread,
+	defer: (target: ((...any) -> ...any) | thread, ...any) -> thread,
+	delay: (seconds: number, target: ((...any) -> ...any) | thread, ...any) -> thread,
+	create: (body: (...any) -> ...any, exclusive: boolean?) -> Task,
+	count: () -> number,
+}
+
 declare import: <K>(name: keyof<Imports> & K) -> index<Imports, K>
 declare function ecall(path: string): ExternalModule
 declare function SetGlobal(name: string, value: any): ()
+
+declare promise: Promise_API
+declare switch: Switch_API
+declare task: Task_API
 
 declare enum: Enums
 declare udim: UDim_API

@@ -8,7 +8,7 @@ luv keeps the standard Luau libraries and adds the globals on this page. It also
 
 The main script and every module it loads share one global table. A parallel block starts with a fresh global table. It has the standard libraries and the globals on this page, but none of your own globals. See [Parallel code](../manual/parallel.md).
 
-luv has no `wait`, `task` or `warn` globals. To wait for time, see [Waiting for time](../manual/yielding.md#waiting-for-time).
+luv has no `wait` or `warn` globals. To wait for time, use [task.wait](task.md#wait).
 
 ## Globals
 
@@ -20,6 +20,9 @@ luv has no `wait`, `task` or `warn` globals. To wait for time, see [Waiting for 
 | [enum](#enum) | table | Holds every enum. |
 | [udim](#udim) | table | Makes [UDim](udim.md) values. |
 | [color](#color) | table | Makes [Color](color.md) values. |
+| [task](#task) | table | Starts coroutines and waits for time. |
+| [promise](#promise) | table | Holds work that is not done yet. |
+| [switch](#switch) | table | Picks a function by name. |
 | [EnterParallel](#enterparallel) | function | Starts a parallel block. |
 | [ExitParallel](#exitparallel) | function | Ends a parallel block. |
 | [coroutine.resume](#coroutine-resume) | function | Resumes a coroutine. luv changes it. |
@@ -176,6 +179,36 @@ local tint = color.fromHex("#ff8000")
 ```
 
 A read only table with [color.new](color.md#new), [color.fromRGB](color.md#fromrgb), [color.fromHex](color.md#fromhex), [color.fromHSV](color.md#fromhsv) and the [constants](color.md#constants) `color.white`, `color.black` and `color.transparent`. See [Color](color.md).
+
+### task
+
+```luau
+task.wait(1)
+task.spawn(print, "on a coroutine")
+```
+
+A read only table with [task.wait](task.md#wait), [task.spawn](task.md#spawn), [task.defer](task.md#defer), [task.delay](task.md#delay), [task.create](task.md#create) and [task.count](task.md#count). See [task](task.md).
+
+### promise
+
+```luau
+local handle = promise.new(function(resolve)
+	resolve("done")
+end)
+```
+
+A read only table with [promise.new](promise.md#new), [promise.call](promise.md#call), [promise.resolve](promise.md#resolve), [promise.reject](promise.md#reject), [promise.all](promise.md#all), [promise.race](promise.md#race), [promise.delay](promise.md#delay) and [promise.is](promise.md#is). See [promise](promise.md).
+
+### switch
+
+```luau
+local pick = switch.new({
+	open = function() end,
+	close = function() end,
+})
+```
+
+A read only table with [switch.new](switch.md#new). See [switch](switch.md).
 
 ### EnterParallel
 

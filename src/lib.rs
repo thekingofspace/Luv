@@ -4,6 +4,7 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 pub mod api;
 pub mod audio;
 pub mod builder;
+pub mod concurrency;
 pub mod datatypes;
 pub mod graphics;
 pub mod luaurc;

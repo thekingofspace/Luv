@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mlua::chunk::{ChunkMode, Compiler};
-use mlua::{AnyUserData, Function, IntoLuaMulti, Lua, LuaString, MultiValue, Result, Value};
+use mlua::{AnyUserData, Function, IntoLuaMulti, Lua, LuaOptions, LuaString, MultiValue, Result, StdLib, Value};
 use tokio::sync::mpsc;
 use tokio::task::LocalSet;
 use tokio::time::{self, MissedTickBehavior, Sleep};
@@ -34,6 +34,7 @@ use crate::window::{WindowEvent, WindowId};
 
 pub const THREAD_STACK_SIZE: usize = 16 * 1024 * 1024;
 pub const HEARTBEAT_RATE: f64 = 60.0;
+const THREAD_POOL: usize = 256;
 
 #[cfg(windows)]
 fn raise_timer_resolution() {
@@ -131,7 +132,7 @@ impl Runtime {
 
     fn create(engine: Arc<Engine>, label: Option<String>) -> Result<Self> {
         raise_timer_resolution();
-        let lua = Lua::new();
+        let lua = Lua::new_with(StdLib::ALL_SAFE, LuaOptions::new().thread_pool_size(THREAD_POOL))?;
 
         let reporter = {
             let engine = engine.clone();
@@ -172,6 +173,7 @@ impl Runtime {
         globals.set(HOOK, lua.create_function(parallel_hook)?)?;
         scheduler::install_coroutine_library(&lua)?;
         datatypes::install(&lua)?;
+        crate::concurrency::install(&lua)?;
         crate::objects::external::install(&lua)?;
 
         let messenger = lua.create_userdata(Messenger::new(engine.bus().clone()))?;

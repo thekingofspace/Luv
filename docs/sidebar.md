@@ -37,6 +37,9 @@
 
 - [Type index](pages/reference/types.md)
 - [Globals](pages/reference/globals.md)
+- [task](pages/reference/task.md)
+- [promise](pages/reference/promise.md)
+- [switch](pages/reference/switch.md)
 - [UDim](pages/reference/udim.md)
 - [Color](pages/reference/color.md)
 - [Enums](pages/reference/enums.md)

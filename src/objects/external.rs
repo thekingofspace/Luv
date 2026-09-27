@@ -292,7 +292,9 @@ impl UserData for External {
     }
 }
 
-const RESERVED: [&str; 8] = ["ecall", "import", "require", "enum", "udim", "color", "SetGlobal", "_G"];
+const RESERVED: [&str; 11] = [
+    "ecall", "import", "require", "enum", "udim", "color", "promise", "switch", "task", "SetGlobal", "_G",
+];
 
 fn set_global(lua: &Lua, name: &str, value: Value) -> Result<()> {
     let clean = name.trim();

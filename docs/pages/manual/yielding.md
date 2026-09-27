@@ -14,6 +14,11 @@ These functions yield the calling coroutine:
 
 | Function | Waits until |
 | --- | --- |
+| [task.wait](../reference/task.md#wait) | The seconds are up. |
+| [Promise:Await](../reference/promise.md#await) | The promise settles. |
+| [Promise:AwaitStatus](../reference/promise.md#awaitstatus) | The promise settles. |
+| [Task:Wait](../reference/task.md#wait-2) | Every run of that Task is done. |
+| A [switch](../reference/switch.md) call | The case returns. |
 | [Signal:Wait](../reference/signal.md#wait) | The next fire. |
 | [Signal:Invoke](../reference/signal.md#invoke) | The handler returns. It only yields when the handler yields. |
 | [Messenger:Wait](../reference/messenger.md#wait) | The next message on the topic. |
@@ -29,6 +34,8 @@ These never yield:
 - `BindHandler`, `UnBind`, `IsBound`, `Subscribe` and `Unsubscribe`.
 - `import`, `print` and the [Bulk](../reference/bulk.md) functions.
 - Everything in `udim`, `color` and `enum`.
+- [task.spawn](../reference/task.md#spawn), [task.defer](../reference/task.md#defer) and [task.delay](../reference/task.md#delay). They start a coroutine and come back.
+- [promise.new](../reference/promise.md#new), [AndThen](../reference/promise.md#andthen), [Catch](../reference/promise.md#catch) and [Finally](../reference/promise.md#finally). They hook onto the work and come back.
 
 You can call a yielding function anywhere a coroutine can yield. That includes the top level of a script, handlers, modules, code inside `pcall`, and your own coroutines.
 
@@ -59,7 +66,38 @@ This prints `slow start`, `fast`, `fired` and then `slow end`.
 
 ## Running code on the side
 
-Wrap code in `coroutine.wrap` to run it next to the rest of your script. The call returns as soon as the coroutine starts an engine wait.
+[task.spawn](../reference/task.md#spawn) runs a function next to the rest of your script. It returns as soon as the function starts an engine wait.
+
+```luau
+local Process = import("Process")
+local Signal = import("Signal")
+
+local doorOpened: Signal<string> = Signal.new()
+
+task.spawn(function()
+	local who = doorOpened:Wait()
+	print(`{who} opened the door`)
+end)
+
+print("waiting for the door")
+Process.Heartbeat:Wait()
+doorOpened:Fire("Player1")
+```
+
+Use [task.defer](../reference/task.md#defer) when the function should not begin until the code around it stops, and [task.create](../reference/task.md#create) when you start the same function again and again.
+
+When the work has a result you want back later, use a [promise](../reference/promise.md) instead. It is a coroutine with an answer attached.
+
+```luau
+local loading = promise.call(function()
+	return loadTheLevel()
+end)
+
+print("still drawing while it loads")
+local level = loading:Await()
+```
+
+`coroutine.wrap` does the same as `task.spawn` and is still there. The call returns as soon as the coroutine starts an engine wait.
 
 ```luau
 local Process = import("Process")
@@ -139,21 +177,28 @@ The error prints first. Then the `apply` handler and the rest of the script run 
 
 ## Waiting for time
 
-luv has no `wait` function. Wait on [Process.Heartbeat](../reference/process.md#heartbeat) instead. It fires 60 times a second and passes the seconds since the last tick.
+[task.wait](../reference/task.md#wait) holds up the coroutine that called it and returns how long it really waited.
+
+```luau
+task.wait(2)
+print("two seconds later")
+```
+
+Only that coroutine waits. Everything else in the game keeps going.
+
+To follow the engine tick rather than the clock, wait on [Process.Heartbeat](../reference/process.md#heartbeat). It fires 60 times a second and passes the seconds since the last tick.
 
 ```luau
 local Process = import("Process")
 
-local function waitSeconds(seconds: number)
-	local elapsed = 0
-	while elapsed < seconds do
-		elapsed += Process.Heartbeat:Wait()
-	end
+local elapsed = 0
+while elapsed < 2 do
+	elapsed += Process.Heartbeat:Wait()
+	print(`{elapsed} seconds in`)
 end
-
-waitSeconds(2)
-print("two seconds later")
 ```
+
+Use `task.wait` when you only care how long it has been, and the heartbeat when you want to do something on every tick along the way.
 
 The heartbeat only fires while something listens to it. When a thread is busy, luv skips the ticks it missed, so the next tick passes a larger number. Each parallel block has its own heartbeat.
 
@@ -163,7 +208,8 @@ The heartbeat runs on its own timer. It does not follow the frames of a window. 
 
 The game keeps running while any of these is true, in any thread:
 
-- A coroutine is running, or it waits on an engine call other than `Signal:Wait` or `Messenger:Wait`. For example [Process.spawn](../reference/process.md) waits for a program to end.
+- A coroutine is running, or it waits on an engine call other than the ones listed below. For example [Process.spawn](../reference/process.md) waits for a program to end, and [task.wait](../reference/task.md#wait) waits for the clock.
+- A [task.delay](../reference/task.md#delay) or a [promise.delay](../reference/promise.md#delay) has not had its turn yet.
 - `Process.Heartbeat` has a handler or a waiting coroutine.
 - A window is open.
 - A Messenger message has not reached every thread yet.
@@ -185,6 +231,7 @@ This game runs for about one second. It ends when the handler unbinds, because n
 These do not keep the game running on their own:
 
 - A coroutine that waits in `Signal:Wait` or `Messenger:Wait`.
+- A coroutine that waits in `Promise:Await`, `Promise:AwaitStatus` or `Task:Wait`.
 - Messenger subscriptions.
 - BindToClose callbacks.
 - A coroutine paused with `coroutine.yield`.
@@ -198,6 +245,8 @@ coroutine.wrap(function()
 end)()
 print("the game ends after this line")
 ```
+
+So a promise on its own does not hold the game open. What holds it open is the work inside it. A body that is waiting for a file, a reply or the clock is a running coroutine, and that counts. A promise nothing will ever settle does not, and the game ends with the `Await` still waiting.
 
 When nothing is left, the game closes:
 

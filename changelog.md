@@ -4,6 +4,15 @@
 
 - `Bulk.BulkUpdate` does the whole batch in one step instead of one step per property. Setting two properties on 900 renderables went from 9.3 ms to 4.1 ms.
 
+## Coroutines
+
+- A new `task` global with `task.wait`, `task.spawn`, `task.defer` and `task.delay`.
+- `task.create` makes a coroutine you can start again and again, and takes a flag to allow only one run at a time.
+- A new `promise` global. `promise.new` runs a body with `resolve` and `reject` on a coroutine, and the promise it returns has `AndThen`, `Catch`, `Finally`, `Await`, `AwaitStatus` and `Cancel`.
+- `promise.all` and `promise.race` wait on a whole list. `promise.call`, `promise.resolve`, `promise.reject`, `promise.delay` and `promise.is` are there too.
+- A new `switch` global. `switch.new` builds a table of names to functions that is looked up in Rust, and each call runs its case on a new coroutine.
+- luv reuses the coroutines it makes for engine calls, so a switch, a promise step and a signal invoke all cost less than they did.
+
 ## Assets
 
 - `Asset.FromBytes` makes an asset out of bytes you already have, with no file on disk.

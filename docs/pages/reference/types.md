@@ -26,6 +26,12 @@ luv writes `types.d.luau` from the types of the engine plus every plugin type fi
 | [Messenger](messenger.md) | [BaseGameObject](basegameobject.md) | Sends messages by topic between threads. |
 | `Messenger_API` | none | The same as `Messenger`. See [Messenger](messenger.md). |
 | `Bulk_API` | none | The `Bulk` library. See [Bulk](bulk.md). |
+| [Promise](promise.md#promise-object) | none | Work that is not done yet, from [promise.new](promise.md#new). |
+| `Promise_API` | none | The `promise` global. See [promise](promise.md). |
+| [Task](task.md#task-object) | none | A coroutine you can start again and again, from [task.create](task.md#create). |
+| `TaskFields` | none | The properties and methods of a Task. See [Task](task.md#task-object). |
+| `Task_API` | none | The `task` global. See [task](task.md). |
+| `Switch_API` | none | The `switch` global. See [switch](switch.md). |
 
 ## Enum types
 

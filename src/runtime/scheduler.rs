@@ -258,6 +258,33 @@ impl Scheduler {
         self.launch(lua, function, args, |_| {});
     }
 
+    pub fn start(&self, lua: &Lua, function: Function, args: impl IntoLuaMulti, immediate: bool) -> Result<Thread> {
+        self.start_then(lua, function, args, immediate, |_| {})
+    }
+
+    pub fn start_then(
+        &self,
+        lua: &Lua,
+        function: Function,
+        args: impl IntoLuaMulti,
+        immediate: bool,
+        then: impl FnOnce(Option<MultiValue>) + 'static,
+    ) -> Result<Thread> {
+        let thread = lua.create_thread(function)?;
+        self.tracker.enter();
+        self.drive(thread.clone(), args, immediate, then);
+        Ok(thread)
+    }
+
+    pub fn resume(&self, thread: Thread, args: impl IntoLuaMulti, immediate: bool) {
+        self.tracker.enter();
+        self.drive(thread, args, immediate, |_| {});
+    }
+
+    pub fn driving(&self) -> usize {
+        self.driving.borrow().len()
+    }
+
     fn launch(
         &self,
         lua: &Lua,
@@ -281,8 +308,7 @@ impl Scheduler {
     }
 
     pub fn adopt(&self, thread: Thread) {
-        self.tracker.enter();
-        self.drive(thread, (), false, |_| {});
+        self.resume(thread, (), false);
     }
 
     fn drive(

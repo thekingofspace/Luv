@@ -14,6 +14,9 @@ This page lists what luv can do today.
 - Full type info for the editor through `types.d.luau`.
 - `require` by path with `.luaurc` aliases. See [Scripts and modules](../manual/scripts.md).
 - Calls that wait only pause the script that made them. The main thread never blocks. See [Yielding and coroutines](../manual/yielding.md).
+- [task](../reference/task.md) starts coroutines and waits for time, with `task.create` for one you start again and again.
+- [promise](../reference/promise.md) holds work that is not done yet, with `AndThen`, `Catch`, `Await`, `all` and `race`.
+- [switch](../reference/switch.md) picks a function by name and runs it on a coroutine, looked up in Rust.
 - Code between `EnterParallel()` and `ExitParallel()` runs on its own thread. See [Parallel code](../manual/parallel.md).
 - [Signals](../reference/signal.md) for events and a [Messenger](../reference/messenger.md) that sends messages between threads.
 - [Bulk](../reference/bulk.md) updates change many objects in one call.
