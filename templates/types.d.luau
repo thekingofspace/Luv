@@ -1146,6 +1146,10 @@ export type ToSpeaker = NodeObject & {
 	ConeOuterAngle: number,
 	ConeOuterVolume: number,
 	Binaural: boolean,
+	Channels: number,
+	Balance: number,
+	Bass: number,
+	Treble: number,
 }
 
 export type ToBytes = NodeObject & {
@@ -1383,6 +1387,10 @@ export type ToSpeakerConfig = {
 	ConeOuterAngle: number?,
 	ConeOuterVolume: number?,
 	Binaural: boolean?,
+	Channels: number?,
+	Balance: number?,
+	Bass: number?,
+	Treble: number?,
 }
 
 export type ToBytesConfig = {

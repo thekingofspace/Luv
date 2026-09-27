@@ -1,6 +1,6 @@
-use std::f32::consts::{FRAC_PI_4, SQRT_2};
+use std::f32::consts::{FRAC_1_SQRT_2, FRAC_PI_4, SQRT_2};
 
-use super::dsp::{DelayLine, flush, one_pole};
+use super::dsp::{Biquad, DelayLine, Shape, flush, one_pole};
 use super::{BLOCK, Block, Context, Listener, Processor, Ramp, SMOOTHING};
 
 const FOCUS_FADE: f32 = 0.05;
@@ -8,6 +8,9 @@ const BLEND_FADE: f32 = 0.05;
 const MAX_ITD: f32 = 0.00066;
 const LINE: usize = 512;
 const OPEN: f32 = 20_000.0;
+const BASS_HINGE: f32 = 200.0;
+const TREBLE_HINGE: f32 = 4_000.0;
+const SHELF_Q: f32 = FRAC_1_SQRT_2;
 
 type Vector = [f32; 3];
 
@@ -73,6 +76,12 @@ pub struct Speaker {
     cone_outer: f32,
     cone_volume: f32,
     binaural: bool,
+    channels: u8,
+    balance: Ramp,
+    bass: f32,
+    treble: f32,
+    shelves: [Biquad; 2],
+    shaped: bool,
     gains: [f32; 2],
     delays: [f32; 2],
     filters: [f32; 2],
@@ -100,6 +109,12 @@ impl Speaker {
             cone_outer: 360.0,
             cone_volume: 0.0,
             binaural: true,
+            channels: 2,
+            balance: Ramp::new(0.0),
+            bass: 0.0,
+            treble: 0.0,
+            shelves: [Biquad::default(); 2],
+            shaped: false,
             gains: [1.0; 2],
             delays: [0.0; 2],
             filters: [1.0; 2],
@@ -200,6 +215,41 @@ impl Speaker {
     }
 }
 
+impl Speaker {
+    fn shape(&mut self, output: &mut Block) {
+        if self.channels == 1 {
+            let (left, right) = output.split_at_mut(1);
+            for (first, second) in left[0].iter_mut().zip(right[0].iter_mut()) {
+                let middle = (*first + *second) * 0.5;
+                *first = middle;
+                *second = middle;
+            }
+        }
+
+        if self.bass != 0.0 || self.treble != 0.0 {
+            if !self.shaped {
+                self.shelves[0].design(Shape::LowShelf, self.rate, BASS_HINGE, SHELF_Q, self.bass);
+                self.shelves[1].design(Shape::HighShelf, self.rate, TREBLE_HINGE, SHELF_Q, self.treble);
+                self.shaped = true;
+            }
+            for (channel, side) in output.iter_mut().enumerate() {
+                for sample in side.iter_mut() {
+                    let low = self.shelves[0].run(channel, *sample);
+                    *sample = self.shelves[1].run(channel, low);
+                }
+            }
+        }
+        if !self.balance.settled() || self.balance.value() != 0.0 {
+            let (left, right) = output.split_at_mut(1);
+            for (first, second) in left[0].iter_mut().zip(right[0].iter_mut()) {
+                let balance = self.balance.advance();
+                *first *= (1.0 - balance).min(1.0);
+                *second *= (1.0 + balance).min(1.0);
+            }
+        }
+    }
+}
+
 impl Processor for Speaker {
     fn process(&mut self, context: &Context<'_>, input: &Block, output: &mut Block) {
         let focus = if self.owned && !context.focused { 0.0 } else { 1.0 };
@@ -255,6 +305,7 @@ impl Processor for Speaker {
             output[0][frame] = result[0] * gain;
             output[1][frame] = result[1] * gain;
         }
+        self.shape(output);
         if let Some(targets) = targets {
             self.gains = targets.gains;
             self.delays = targets.delays;
@@ -266,6 +317,17 @@ impl Processor for Speaker {
     fn param(&mut self, index: usize, value: f64) {
         let number = value as f32;
         match index {
+            16 => self.channels = if number >= 2.0 { 2 } else { 1 },
+            17 if self.started => self.balance.go(number.clamp(-1.0, 1.0), SMOOTHING * self.rate),
+            17 => self.balance.jump(number.clamp(-1.0, 1.0)),
+            18 => {
+                self.bass = number;
+                self.shaped = false;
+            }
+            19 => {
+                self.treble = number;
+                self.shaped = false;
+            }
             0 if self.started => self.volume.go(number, SMOOTHING * self.rate),
             0 => self.volume.jump(number),
             1 => self.owned = value != 0.0,
@@ -286,5 +348,6 @@ impl Processor for Speaker {
     fn rate(&mut self, rate: f32) {
         self.rate = rate;
         self.primed = false;
+        self.shaped = false;
     }
 }

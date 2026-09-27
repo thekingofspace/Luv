@@ -32,6 +32,59 @@ It also has every member of [NodeObject](nodeobject.md).
 | `ConeOuterAngle` | `number` | `360` | 0 to 360 | `ConeOuterVolume` outside this angle, in degrees. |
 | `ConeOuterVolume` | `number` | `0` | 0 to 1 | The volume outside `ConeOuterAngle`. |
 | `Binaural` | `boolean` | `true` | none | Adds small differences between the ears. See [Binaural](#binaural). |
+| `Channels` | `number` | `2` | 1 or 2 | `1` sends the same sound to both sides. See [Shaping the output](#shaping-the-output). |
+| `Balance` | `number` | `0` | -1 to 1 | Leans the sound left or right. See [Shaping the output](#shaping-the-output). |
+| `Bass` | `number` | `0` | -24 to 24 | Lifts or drops the low end, in decibels. See [Shaping the output](#shaping-the-output). |
+| `Treble` | `number` | `0` | -24 to 24 | Lifts or drops the high end, in decibels. See [Shaping the output](#shaping-the-output). |
+
+## Shaping the output
+
+These four run last, after the volume and after any 3D work, on whatever this speaker is about to send to the device. They change nothing for a [ToBytes](tobytes.md) node and nothing for another speaker.
+
+They run in this order.
+
+| Order | What | What it does |
+| --- | --- | --- |
+| 1 | `Channels` | `1` adds the two sides together and sends that to both. `2` leaves them apart. |
+| 2 | `Bass` and `Treble` | A shelf at each end of the range. |
+| 3 | `Balance` | Turns one side down. |
+
+```luau
+local Sound = window:GetAPI("Sound")
+
+local speaker = Sound:ToSpeaker({
+	Channels = 1,
+	Bass = 4,
+	Treble = -2,
+})
+```
+
+### Channels
+
+`1` is a real downmix, not a copy of one side. Both sides get the average, so nothing is lost and nothing doubles. Use it for a player on one speaker, or to check that a mix still reads when the sides fold together.
+
+`Channels` only ever holds `1` or `2`. Anything else lands on the nearest of the two.
+
+### Balance
+
+`0` leaves both sides alone. `-1` turns the right side all the way down and `1` turns the left side all the way down. Values in between turn one side down by that much and leave the other alone, so the whole thing never gets louder.
+
+Changes glide over 20 ms, so moving it while sound plays does not click.
+
+### Bass and Treble
+
+Both are in decibels. `0` is off and does no work at all, so a speaker that leaves them alone costs nothing.
+
+| Setting | Hinge | What it moves |
+| --- | --- | --- |
+| `Bass` | 200 Hz | Everything below the hinge, by that many decibels. |
+| `Treble` | 4 kHz | Everything above the hinge, by that many decibels. |
+
+A shelf leans the whole end of the range rather than picking out one note, so it sounds like a tone control and not like an effect.
+
+Lift with care. `Bass = 12` makes the low end four times louder, which can push the mix past full scale and bring back the crackle you were trying to avoid. Cutting is safer than lifting. Watch [Sound.LateBlocks](sound-api.md#properties) while you tune.
+
+For anything sharper than a lean, put a [modifier](modifiers.md) in the chain instead. [LowShelf](modifiers.md#lowshelf), [HighShelf](modifiers.md#highshelf), [Peak](modifiers.md#peak) and [Equalizer](modifiers.md#equalizer) all let you pick the hinge, the width and the gain. `Bass` and `Treble` are here for the one thing a player expects to find on an output, with no chain to build.
 
 ## Device
 
@@ -168,3 +221,7 @@ The config table of [Sound:ToSpeaker](sound-api.md#tospeaker). Its type is `ToSp
 | `ConeOuterAngle` | `number` | `360` | `ConeOuterVolume` outside this angle, in degrees. |
 | `ConeOuterVolume` | `number` | `0` | The volume outside `ConeOuterAngle`. |
 | `Binaural` | `boolean` | `true` | Adds small differences between the ears. |
+| `Channels` | `number` | `2` | `1` sends the same sound to both sides. |
+| `Balance` | `number` | `0` | Leans the sound left or right. |
+| `Bass` | `number` | `0` | Lifts or drops the low end, in decibels. |
+| `Treble` | `number` | `0` | Lifts or drops the high end, in decibels. |

@@ -152,6 +152,17 @@ async fn run_sound(files: Vec<(&'static str, Vec<u8>)>, source: &str) -> (Outcom
     (outcome, headless)
 }
 
+fn sided(seconds: f64, left: f64, right: f64) -> Vec<u8> {
+    let frames = (seconds * f64::from(RATE)) as usize;
+    let mut samples = Vec::with_capacity(frames * 2);
+    for frame in 0..frames {
+        let phase = TAU * 375.0 * frame as f64 / f64::from(RATE);
+        samples.push((left * phase.sin()) as f32);
+        samples.push((right * phase.sin()) as f32);
+    }
+    wav(2, &samples)
+}
+
 fn tone_asset() -> Vec<(&'static str, Vec<u8>)> {
     vec![("assets/tone.wav", tone(375.0, 1.0, 0.5))]
 }
@@ -1132,4 +1143,102 @@ results = {
     assert_eq!(results.get::<String>("skippedKind").unwrap(), "number");
     assert_eq!(results.get::<f64>("late").unwrap(), 0.0, "a healthy run drops no blocks");
     assert_eq!(results.get::<f64>("skipped").unwrap(), 0.0);
+}
+
+#[tokio::test]
+async fn a_speaker_shapes_what_it_sends_to_the_device() {
+    let (outcome, _) = run_sound(
+        vec![
+            ("assets/sided.wav", sided(0.5, 0.6, 0.2)),
+            ("assets/low.wav", tone(120.0, 0.5, 0.3)),
+            ("assets/high.wav", tone(9000.0, 0.5, 0.3)),
+        ],
+        &script(
+            r#"
+local function play(file: string, settings)
+    local node = Sound:SoundNode(file, { Looping = true })
+    local speaker = Sound:ToSpeaker(settings)
+    node.Input:Link(speaker.Output)
+    node:Play()
+    sleep(50)
+    takeSpeaker()
+    sleep(90)
+    local taken = takeSpeaker()
+    node:Destroy()
+    speaker:Destroy()
+    sleep(70)
+    takeSpeaker()
+    return taken
+end
+
+local plain = play("sided.wav", nil)
+local mono = play("sided.wav", { Channels = 1 })
+local hardLeft = play("sided.wav", { Balance = -1 })
+local hardRight = play("sided.wav", { Balance = 1 })
+
+local flatLow = play("low.wav", nil)
+local liftedLow = play("low.wav", { Bass = 12 })
+local flatHigh = play("high.wav", nil)
+local cutHigh = play("high.wav", { Treble = -24 })
+
+local speaker = Sound:ToSpeaker()
+results = {
+    channels = speaker.Channels,
+    balance = speaker.Balance,
+    bass = speaker.Bass,
+    treble = speaker.Treble,
+    plainLeft = plain.left,
+    plainRight = plain.right,
+    monoLeft = mono.left,
+    monoRight = mono.right,
+    leftOnly = hardLeft.right,
+    leftKept = hardLeft.left,
+    rightOnly = hardRight.left,
+    rightKept = hardRight.right,
+    flatLow = flatLow.rms,
+    liftedLow = liftedLow.rms,
+    flatHigh = flatHigh.rms,
+    cutHigh = cutHigh.rms,
+    clamped = (function() speaker.Channels = 5 return speaker.Channels end)(),
+}
+"#,
+        ),
+    )
+    .await;
+    outcome.assert_clean();
+    let results: Table = outcome.global("results");
+    let number = |key: &str| results.get::<f64>(key).unwrap();
+
+    assert_eq!(number("channels"), 2.0);
+    assert_eq!(number("balance"), 0.0);
+    assert_eq!(number("bass"), 0.0);
+    assert_eq!(number("treble"), 0.0);
+
+    assert!(
+        number("plainLeft") > number("plainRight") * 2.0,
+        "the source is louder on the left, got {} and {}",
+        number("plainLeft"),
+        number("plainRight")
+    );
+    let (left, right) = (number("monoLeft"), number("monoRight"));
+    assert!((left - right).abs() < 0.01, "Channels = 1 should match both sides, got {left} and {right}");
+
+    assert!(number("leftOnly") < 0.02, "Balance = -1 should silence the right, got {}", number("leftOnly"));
+    assert!(number("leftKept") > 0.3);
+    assert!(number("rightOnly") < 0.02, "Balance = 1 should silence the left, got {}", number("rightOnly"));
+    assert!(number("rightKept") > 0.1);
+
+    assert!(
+        number("liftedLow") > number("flatLow") * 1.5,
+        "Bass = 12 should lift a 120 Hz tone, got {} against {}",
+        number("liftedLow"),
+        number("flatLow")
+    );
+    assert!(
+        number("cutHigh") < number("flatHigh") * 0.5,
+        "Treble = -24 should cut a 9 kHz tone, got {} against {}",
+        number("cutHigh"),
+        number("flatHigh")
+    );
+    assert_eq!(number("clamped"), 2.0, "Channels holds to 1 or 2");
 }

@@ -18,6 +18,7 @@
 
 ## Sound
 
+- A ToSpeaker can shape what it sends to the device with `Channels`, `Balance`, `Bass` and `Treble`.
 - `Sound.LateBlocks` and `Sound.SkippedBlocks` count the blocks that missed the deadline, so crackling can be told apart from a fault in the game.
 - luv no longer throws away the reports the sound card sends when it runs out of sound to play.
 
