@@ -9,6 +9,7 @@ pub enum Shape {
     Peak,
     LowShelf,
     HighShelf,
+    AllPass,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -58,6 +59,7 @@ impl Biquad {
             }
             Shape::BandPass => (alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * cos, 1.0 - alpha),
             Shape::Notch => (1.0, -2.0 * cos, 1.0, 1.0 + alpha, -2.0 * cos, 1.0 - alpha),
+            Shape::AllPass => (1.0 - alpha, -2.0 * cos, 1.0 + alpha, 1.0 + alpha, -2.0 * cos, 1.0 - alpha),
             Shape::Peak => (
                 1.0 + alpha * amplitude,
                 -2.0 * cos,

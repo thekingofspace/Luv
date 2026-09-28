@@ -8,10 +8,10 @@ use mlua::{
 
 use super::Graph;
 use super::packet::AudioPacket;
-use crate::audio::specs::{Family, Param, Range, SPEAKER_DIRECTION, SPEAKER_POSITION, Spec};
+use crate::audio::specs::{Family, PLAYER_PRIORITY, Param, Range, SPEAKER_DIRECTION, SPEAKER_POSITION, Spec};
 use crate::audio::{
-    Action, Event, MeterShared, Message, NodeId, PlayerShared, Processor, RawFormat, Role, SampleFormat, StreamShared,
-    parse,
+    Action, Event, MeterShared, Message, NodeId, PlayerShared, ProbeShared, Processor, RawFormat, Role, SampleFormat,
+    StreamShared, band_center, parse,
 };
 use crate::datatypes::{EnumItem, UDim};
 use crate::objects::window::fire;
@@ -39,6 +39,7 @@ pub(super) struct PlayerState {
     pub transport: Transport,
     pub epoch: u64,
     pub hint: f64,
+    pub order: u64,
 }
 
 impl PlayerState {
@@ -80,6 +81,7 @@ pub(super) enum State {
     Speaker(Option<String>),
     Gain(Option<Fade>),
     Meter(Arc<MeterShared>),
+    Probe(Arc<ProbeShared>),
     Plain,
 }
 
@@ -186,7 +188,7 @@ fn number(param: &Param, value: &Value) -> Result<f64> {
     Ok(number)
 }
 
-fn convert(lua: &Lua, param: &Param, value: Value) -> Result<f64> {
+pub(super) fn convert(lua: &Lua, param: &Param, value: Value) -> Result<f64> {
     match param.range {
         Range::Number(min, max) => Ok(number(param, &value)?.clamp(min, max)),
         Range::Integer(min, max) => Ok(number(param, &value)?.round().clamp(min, max)),
@@ -270,6 +272,14 @@ impl SoundObject {
         }
     }
 
+    pub(super) fn voice(&self) -> Option<(f64, u64)> {
+        let player = self.player()?;
+        if player.transport != Transport::Playing || self.base.is_destroyed() {
+            return None;
+        }
+        Some((self.params[PLAYER_PRIORITY], player.order))
+    }
+
     fn set_param(&mut self, index: usize, value: f64) -> Result<()> {
         let graph = self.alive()?;
         self.params[index] = value;
@@ -302,6 +312,9 @@ impl SoundObject {
             (State::Gain(Some(fade)), "Volume") => Value::Number(fade.current()),
             (State::Meter(meter), "Peak") => Value::Number(f64::from(meter.peak())),
             (State::Meter(meter), "Loudness") => Value::Number(f64::from(meter.loudness())),
+            (State::Probe(probe), "CurrentGain") if self.spec.class == "AutoGain" => {
+                Value::Number(f64::from(probe.get(0)))
+            }
             _ => return Ok(None),
         }))
     }
@@ -317,6 +330,7 @@ impl SoundObject {
                     "Length" | "IsPlaying" | "IsPaused" | "SampleRate" | "Channels" | "Asset"
                 ) | (State::Stream(_), "Buffered" | "IsPlaying")
                     | (State::Meter(_), "Peak" | "Loudness")
+                    | (State::Probe(_), "CurrentGain")
             )
     }
 
@@ -448,20 +462,57 @@ fn player_call(this: &AnyUserData, name: &str) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn play(lua: &Lua, this: &AnyUserData) -> Result<()> {
+fn make_room(lua: &Lua, this: &AnyUserData) -> Result<bool> {
+    let (graph, id, priority, playing) = {
+        let object = this.borrow::<SoundObject>()?;
+        let graph = object.alive()?;
+        let playing = object.voice().is_some();
+        (graph, object.id, object.params[PLAYER_PRIORITY], playing)
+    };
+    let most = graph.max_voices.get();
+    if most == 0 || playing {
+        return Ok(true);
+    }
+    loop {
+        let voices = graph.voices(id);
+        if voices.len() < most {
+            return Ok(true);
+        }
+        let quietest = voices
+            .into_iter()
+            .min_by(|a, b| a.1.total_cmp(&b.1).then(a.2.cmp(&b.2)));
+        match quietest {
+            Some((node, weight, _)) if weight <= priority => {
+                stop(lua, &node)?;
+                graph.stolen.set(graph.stolen.get() + 1);
+            }
+            _ => {
+                graph.refused.set(graph.refused.get() + 1);
+                return Ok(false);
+            }
+        }
+    }
+}
+
+pub(super) fn play(lua: &Lua, this: &AnyUserData) -> Result<bool> {
     player_call(this, "Play")?;
+    if !make_room(lua, this)? {
+        return Ok(false);
+    }
     let started = {
         let mut object = this.borrow_mut::<SoundObject>()?;
         let graph = object.alive()?;
         let id = object.id;
         let signal = object.signal("Started");
+        let order = graph.stamp();
         let Some(player) = object.player_mut() else {
-            return Ok(());
+            return Ok(false);
         };
         let from = if player.transport == Transport::Stopped { player.hint } else { 0.0 };
         player.epoch += 1;
         player.transport = Transport::Playing;
         player.hint = from;
+        player.order = order;
         graph.send(Action::Message(
             id,
             Message::Play {
@@ -472,7 +523,8 @@ pub(super) fn play(lua: &Lua, this: &AnyUserData) -> Result<()> {
         ));
         signal
     };
-    started.map_or(Ok(()), |signal| fire(lua, &signal, ()))
+    started.map_or(Ok(()), |signal| fire(lua, &signal, ()))?;
+    Ok(true)
 }
 
 pub(super) fn pause(lua: &Lua, this: &AnyUserData) -> Result<bool> {
@@ -520,7 +572,7 @@ pub(super) fn resume(lua: &Lua, this: &AnyUserData) -> Result<()> {
         }
     };
     match resumed {
-        None => play(lua, this),
+        None => play(lua, this).map(|_| ()),
         Some(signal) => signal.map_or(Ok(()), |signal| fire(lua, &signal, ())),
     }
 }
@@ -634,12 +686,36 @@ fn fade(this: &AnyUserData, volume: f64, seconds: f64) -> Result<()> {
     Ok(())
 }
 
+fn probe_of(this: &AnyUserData, name: &str) -> Result<(Arc<ProbeShared>, usize, f32)> {
+    let object = this.borrow::<SoundObject>()?;
+    let graph = object.alive()?;
+    let State::Probe(probe) = &object.state else {
+        return Err(runtime(format!("{name} is not a valid member of {}", object.spec.class)));
+    };
+    let count = object.spec.param("Bands").map_or(1, |index| object.params[index] as usize);
+    Ok((probe.clone(), count, graph.audio.rate() as f32))
+}
+
+fn levels(lua: &Lua, this: &AnyUserData) -> Result<Table> {
+    let (probe, count, _) = probe_of(this, "GetLevels")?;
+    let values = probe.values();
+    let levels = (0..count).map(|index| f64::from(values.get(index).copied().unwrap_or(0.0)));
+    lua.create_sequence_from(levels)
+}
+
+fn frequencies(lua: &Lua, this: &AnyUserData) -> Result<Table> {
+    let (_, count, rate) = probe_of(this, "GetFrequencies")?;
+    lua.create_sequence_from((0..count).map(|index| f64::from(band_center(index, count, rate))))
+}
+
 fn method_table(lua: &Lua) -> Result<Table> {
     if let Ok(table) = lua.named_registry_value::<Table>(METHODS) {
         return Ok(table);
     }
     let table = lua.create_table()?;
     table.set("Play", lua.create_function(|lua, this: AnyUserData| play(lua, &this))?)?;
+    table.set("GetLevels", lua.create_function(|lua, this: AnyUserData| levels(lua, &this))?)?;
+    table.set("GetFrequencies", lua.create_function(|lua, this: AnyUserData| frequencies(lua, &this))?)?;
     table.set("Stop", lua.create_function(|lua, this: AnyUserData| stop(lua, &this))?)?;
     table.set("Pause", lua.create_function(|lua, this: AnyUserData| pause(lua, &this).map(|_| ()))?)?;
     table.set("Resume", lua.create_function(|lua, this: AnyUserData| resume(lua, &this))?)?;

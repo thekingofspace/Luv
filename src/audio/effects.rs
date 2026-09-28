@@ -1,6 +1,10 @@
+mod more;
+
 use std::f32::consts::{PI, TAU};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+
+pub use more::{MAX_BANDS, band_center};
 
 use super::dsp::{Biquad, DelayLine, Shape, coefficient, decibels, flush, mix_gains};
 use super::{BLOCK, Block, Context, DECLICK, Message, Processor, Ramp, SMOOTHING, apply, frames};
@@ -17,6 +21,10 @@ trait Effect: Send {
     fn settle(&mut self) {}
 
     fn message(&mut self, _message: Message) {}
+
+    fn tail(&self) -> f32 {
+        0.25
+    }
 }
 
 struct Modifier {
@@ -80,6 +88,16 @@ impl Processor for Modifier {
             self.effect.rate(rate);
         }
     }
+
+    fn tail(&self) -> f32 {
+        if !self.started || !self.wet.settled() {
+            return f32::INFINITY;
+        }
+        if !self.enabled && self.wet.value() == 0.0 {
+            return 0.0;
+        }
+        self.effect.tail()
+    }
 }
 
 struct Gain {
@@ -108,6 +126,10 @@ impl Effect for Gain {
         if let Message::Fade { to, seconds } = message {
             self.volume.go(to, seconds * self.rate);
         }
+    }
+
+    fn tail(&self) -> f32 {
+        if self.volume.settled() { 0.0 } else { f32::INFINITY }
     }
 }
 
@@ -144,6 +166,10 @@ impl Effect for Pan {
 
     fn settle(&mut self) {
         self.pan.jump(self.pan.target());
+    }
+
+    fn tail(&self) -> f32 {
+        if self.pan.settled() { 0.0 } else { f32::INFINITY }
     }
 }
 
@@ -372,6 +398,17 @@ impl Echo {
 }
 
 impl Effect for Echo {
+    fn tail(&self) -> f32 {
+        if !self.delay.settled() {
+            return f32::INFINITY;
+        }
+        let delay = self.delay.target();
+        if self.feedback <= 0.001 {
+            return delay + 0.05;
+        }
+        (delay * (0.001f32.ln() / self.feedback.ln()) + 0.05).min(30.0)
+    }
+
     fn process(&mut self, block: &mut Block) {
         let (dry, wet) = mix_gains(self.mix);
         for [left, right] in frames(block) {
@@ -518,6 +555,10 @@ impl Reverb {
 }
 
 impl Effect for Reverb {
+    fn tail(&self) -> f32 {
+        10.0
+    }
+
     fn process(&mut self, block: &mut Block) {
         let (dry, wet) = mix_gains(self.mix);
         let feedback = self.room * 0.28 + 0.7;
@@ -616,6 +657,10 @@ impl Modulated {
 }
 
 impl Effect for Modulated {
+    fn tail(&self) -> f32 {
+        1.0
+    }
+
     fn process(&mut self, block: &mut Block) {
         let (dry, wet) = mix_gains(self.mix);
         let step = self.speed / self.rate;
@@ -669,6 +714,10 @@ struct Phaser {
 }
 
 impl Effect for Phaser {
+    fn tail(&self) -> f32 {
+        1.0
+    }
+
     fn process(&mut self, block: &mut Block) {
         let (dry, wet) = mix_gains(self.mix);
         let step = self.speed / self.rate;
@@ -878,6 +927,10 @@ impl Effect for Compressor {
     fn reset(&mut self) {
         self.envelope = 0.0;
     }
+
+    fn tail(&self) -> f32 {
+        self.release + 0.25
+    }
 }
 
 struct Limiter {
@@ -918,6 +971,10 @@ impl Effect for Limiter {
 
     fn reset(&mut self) {
         self.gain = 1.0;
+    }
+
+    fn tail(&self) -> f32 {
+        self.release + 0.25
     }
 }
 
@@ -979,6 +1036,10 @@ impl Effect for NoiseGate {
         self.held = 0.0;
         self.gain = 0.0;
     }
+
+    fn tail(&self) -> f32 {
+        self.hold + self.release + 0.25
+    }
 }
 
 const GRAIN: f32 = 0.05;
@@ -1003,6 +1064,10 @@ impl PitchShift {
 }
 
 impl Effect for PitchShift {
+    fn tail(&self) -> f32 {
+        0.2
+    }
+
     fn process(&mut self, block: &mut Block) {
         let window = GRAIN * self.rate;
         let step = (1.0 - self.pitch) / window;
@@ -1097,6 +1162,46 @@ impl Effect for StereoWidth {
     fn settle(&mut self) {
         self.width.jump(self.width.target());
     }
+
+    fn tail(&self) -> f32 {
+        if self.width.settled() { 0.0 } else { f32::INFINITY }
+    }
+}
+
+pub struct ProbeShared {
+    count: AtomicUsize,
+    values: [AtomicU32; MAX_BANDS],
+}
+
+impl ProbeShared {
+    pub fn new(count: usize) -> Arc<ProbeShared> {
+        Arc::new(ProbeShared {
+            count: AtomicUsize::new(count.min(MAX_BANDS)),
+            values: std::array::from_fn(|_| AtomicU32::new(0)),
+        })
+    }
+
+    pub fn count(&self) -> usize {
+        self.count.load(Ordering::Acquire)
+    }
+
+    fn set_count(&self, count: usize) {
+        self.count.store(count.min(MAX_BANDS), Ordering::Release);
+    }
+
+    pub fn get(&self, index: usize) -> f32 {
+        self.values.get(index).map_or(0.0, |value| f32::from_bits(value.load(Ordering::Acquire)))
+    }
+
+    fn set(&self, index: usize, value: f32) {
+        if let Some(slot) = self.values.get(index) {
+            slot.store(value.to_bits(), Ordering::Release);
+        }
+    }
+
+    pub fn values(&self) -> Vec<f32> {
+        (0..self.count()).map(|index| self.get(index)).collect()
+    }
 }
 
 pub struct MeterShared {
@@ -1155,6 +1260,10 @@ impl Effect for Meter {
         self.peak = 0.0;
         self.energy = 0.0;
     }
+
+    fn tail(&self) -> f32 {
+        3.0
+    }
 }
 
 const PASS: &[Field] = &[Field::Frequency, Field::Q];
@@ -1164,7 +1273,7 @@ const CHORUS: &[Sweep] = &[Sweep::Rate, Sweep::Depth, Sweep::Mix];
 const FLANGER: &[Sweep] = &[Sweep::Rate, Sweep::Depth, Sweep::Feedback, Sweep::Mix];
 const VIBRATO: &[Sweep] = &[Sweep::Rate, Sweep::Depth];
 
-fn effect(class: &str, rate: f32, meter: Option<Arc<MeterShared>>) -> Option<Box<dyn Effect>> {
+fn effect(class: &str, rate: f32, meter: Option<Arc<MeterShared>>, probe: Option<Arc<ProbeShared>>) -> Option<Box<dyn Effect>> {
     Some(match class {
         "Gain" => Box::new(Gain {
             rate,
@@ -1181,6 +1290,7 @@ fn effect(class: &str, rate: f32, meter: Option<Arc<MeterShared>>) -> Option<Box
         "Peak" => Box::new(Filter::new(Shape::Peak, PEAK, rate)),
         "LowShelf" => Box::new(Filter::new(Shape::LowShelf, SHELF, rate)),
         "HighShelf" => Box::new(Filter::new(Shape::HighShelf, SHELF, rate)),
+        "AllPass" => Box::new(Filter::new(Shape::AllPass, PASS, rate)),
         "Equalizer" => Box::new(Equalizer::new(rate)),
         "Echo" => Box::new(Echo::new(rate)),
         "Reverb" => Box::new(Reverb::new(rate)),
@@ -1260,12 +1370,27 @@ fn effect(class: &str, rate: f32, meter: Option<Arc<MeterShared>>) -> Option<Box
             peak: 0.0,
             energy: 0.0,
         }),
+        "DcBlock" => Box::new(more::DcBlock::new(rate)),
+        "SoftClip" => Box::new(more::SoftClip::new()),
+        "AutoGain" => Box::new(more::AutoGain::new(rate, probe.unwrap_or_else(|| ProbeShared::new(1)))),
+        "Expander" => Box::new(more::Expander::new(rate)),
+        "Exciter" => Box::new(more::Exciter::new(rate)),
+        "AutoWah" => Box::new(more::AutoWah::new(rate)),
+        "Haas" => Box::new(more::Haas::new(rate)),
+        "AutoPan" => Box::new(more::AutoPan::new(rate)),
+        "Transient" => Box::new(more::Transient::new(rate)),
+        "Spectrum" => Box::new(more::Spectrum::new(rate, probe.unwrap_or_else(|| ProbeShared::new(8)))),
         _ => return None,
     })
 }
 
-pub fn modifier(class: &str, rate: f32, meter: Option<Arc<MeterShared>>) -> Option<Box<dyn Processor>> {
-    let effect = effect(class, rate, meter)?;
+pub fn modifier(
+    class: &str,
+    rate: f32,
+    meter: Option<Arc<MeterShared>>,
+    probe: Option<Arc<ProbeShared>>,
+) -> Option<Box<dyn Processor>> {
+    let effect = effect(class, rate, meter, probe)?;
     Some(Box::new(Modifier {
         effect,
         rate,

@@ -73,3 +73,32 @@ Frequency values are in Hz. The filter kinds are LowPass, HighPass, BandPass, No
 - `Delay` of Echo glides over 50 ms.
 - Other values change at once.
 - Values from the config table apply at once.
+
+## Resting
+
+A modifier with nothing coming in rests. It stops working and sends out silence, so a chain that waits for its sound costs almost nothing.
+
+It rests once both of these are true:
+
+- Everything linked into it has been silent for longer than its tail.
+- It is sending out silence itself.
+
+The tail is how long a modifier can keep making sound after its input stops. It is a quarter of a second for most kinds. These are different:
+
+| Kind | Tail |
+| --- | --- |
+| Gain, Pan and StereoWidth | None. They rest as soon as nothing comes in. |
+| Haas | A tenth of a second. |
+| AutoGain | Half a second. |
+| Transient, Chorus, Flanger, Vibrato and Phaser | 1 second. |
+| Compressor, Limiter and Expander | Their `Release` plus a quarter of a second. |
+| NoiseGate | Its `Hold` and `Release` plus a quarter of a second. |
+| [Echo](modifiers.md#echo) | Until the echoes fall below hearing, worked out from `Delay` and `Feedback`. At most 30 seconds. |
+| [Reverb](modifiers.md#reverb) | 10 seconds. |
+| Meter and Spectrum | 3 seconds, so their readings fall to 0 first. |
+
+A modifier in the middle of a [Fade](modifiers.md#fade) or a glide does not rest until the change is done, so a fade always finishes on time.
+
+It wakes the moment sound comes in again, and nothing is lost. You never have to do anything to make it happen. [Sound:GetStats](sound-api.md#getstats) reports how many rest in `RestingNodes`.
+
+In a test with 500 modifiers waiting on sounds that were not playing, resting took the work from 14 percent of the time luv has for each block down to 1.3 percent.

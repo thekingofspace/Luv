@@ -147,6 +147,57 @@ Set `muffle.Cutoff` to `500` later to muffle the music. `Fade` moves the volume 
 
 The [Modifier list](../reference/modifiers.md) has every kind with its values.
 
+## Baking sounds
+
+Every modifier works on every block while its sound plays. A gunshot through a Reverb costs the Reverb each time it fires, and twenty gunshots cost twenty Reverbs.
+
+When a sound always goes through the same modifiers, bake it. [Sound:Bake](../reference/sound-api.md#bake) plays it through them once, ahead of time, and gives you a [BakedSound](../reference/bakedsound.md). Playing that costs no more than playing the file.
+
+```luau
+local shot = Sound:Bake("shot.wav", {
+	Modifiers = {
+		{ Kind = "HighPass", Cutoff = 120 },
+		{ Kind = "Reverb", RoomSize = 0.7, Mix = 0.3 },
+	},
+	Tail = 1.5,
+	Normalize = -3,
+})
+
+local speaker = Sound:ToSpeaker()
+local function fire()
+	local node = Sound:SoundNode(shot)
+	node.Input:Link(speaker.Output)
+	node:Play()
+end
+```
+
+Bake while the level loads, since it yields until it is done. Bake a few versions for variety, like the same shot at `Speed = 0.9`, `1` and `1.1`.
+
+Keep modifiers live when they have to change while the sound plays, like a muffle that follows the player behind a wall.
+
+## Keeping sound smooth
+
+Crackle comes from two places. The mixer runs out of time, or the mix gets too loud. [Sound:GetStats](../reference/sound-api.md#getstats) tells you which. See [When sound crackles](../reference/sound-api.md#when-sound-crackles).
+
+What helps the most:
+
+- Bake sounds that always go through the same modifiers.
+- Set [MaxVoices](../reference/sound-api.md#voices) so a burst of sounds cannot pile up.
+- Put a [SoftClip](../reference/modifiers.md#softclip) or a [Limiter](../reference/modifiers.md#limiter) right before each speaker.
+- [Preload](../reference/sound-api.md#preload) the sounds of a level while it loads.
+
+```luau
+Sound.MaxVoices = 32
+Sound:Preload("coin.wav", "jump.wav", "music/forest.ogg")
+
+local guard = Sound:Modifier("SoftClip", { Ceiling = -1 })
+guard.Input:Link(Sound:ToSpeaker().Output)
+```
+
+Link everything to `guard.Output` instead of to the speaker, and nothing can reach full volume.
+
+You do not need to unlink modifiers that wait for a sound. A modifier with nothing coming in rests and costs almost nothing. See [Resting](../reference/soundmodifier.md#resting).
+
 ## 3D sound
 
 Set `Spatial` to `true` on a [ToSpeaker](../reference/tospeaker.md). Then its `Position` and [Sound.Listener](../reference/sound-api.md#soundlistener) decide the side and the volume. Positions are native Luau vectors.

@@ -332,12 +332,18 @@ impl Host {
         self.status.rate.store(rate, Ordering::Release);
         let renderer = self.renderer.clone();
         let status = self.status.clone();
-        let fill = move |samples: &mut [f32]| match renderer.try_lock() {
-            Ok(mut renderer) => renderer.render(samples, channels),
-            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner().render(samples, channels),
-            Err(TryLockError::WouldBlock) => {
-                status.count_skipped();
-                samples.fill(0.0);
+        let mut last = vec![0.0f32; channels];
+        let fill = move |samples: &mut [f32]| {
+            match renderer.try_lock() {
+                Ok(mut renderer) => renderer.render(samples, channels),
+                Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner().render(samples, channels),
+                Err(TryLockError::WouldBlock) => {
+                    status.count_skipped();
+                    fade_out(samples, &last);
+                }
+            }
+            if samples.len() >= channels {
+                last.copy_from_slice(&samples[samples.len() - channels..]);
             }
         };
         let stream = open_stream(&device, supported, fill, self.errors.0.clone(), None)?;
@@ -463,6 +469,20 @@ impl Host {
                     consumer: None,
                 },
             );
+        }
+    }
+}
+
+const FADE_FRAMES: usize = 64;
+
+fn fade_out(samples: &mut [f32], last: &[f32]) {
+    let channels = last.len().max(1);
+    let frames = samples.len() / channels;
+    let span = FADE_FRAMES.min(frames).max(1);
+    for (frame, chunk) in samples.chunks_mut(channels).enumerate() {
+        let gain = if frame < span { 1.0 - (frame + 1) as f32 / span as f32 } else { 0.0 };
+        for (sample, held) in chunk.iter_mut().zip(last) {
+            *sample = held * gain;
         }
     }
 }

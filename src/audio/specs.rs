@@ -126,7 +126,10 @@ const PLAYER_PARAMS: &[Param] = &[
     flag("Looping", false),
     number("LoopStart", 0.0, 0.0, WIDE),
     number("LoopEnd", 0.0, 0.0, WIDE),
+    number("Priority", 1.0, 0.0, 10.0),
 ];
+
+pub const PLAYER_PRIORITY: usize = 5;
 const PLAYER_SIGNALS: &[&str] = &["Started", "Stopped", "Paused", "Resumed", "Ended", "Looped"];
 const PLAYER_METHODS: &[&str] = &["Play", "Stop", "Pause", "Resume", "PlayOneShot"];
 
@@ -360,6 +363,62 @@ pub const MODIFIERS: &[Spec] = &[
     ),
     modifier("StereoWidth", &[ENABLED, number("Width", 1.0, 0.0, 3.0)]),
     modifier("Meter", &[ENABLED]),
+    modifier(
+        "AllPass",
+        &[ENABLED, frequency("Frequency", 1000.0), number("Q", 0.707, 0.1, 40.0)],
+    ),
+    modifier("DcBlock", &[ENABLED, number("Frequency", 20.0, 1.0, 200.0)]),
+    modifier(
+        "SoftClip",
+        &[ENABLED, number("Ceiling", -1.0, -24.0, 0.0), number("Knee", 0.5, 0.0, 1.0)],
+    ),
+    modifier(
+        "AutoGain",
+        &[
+            ENABLED,
+            number("Target", -18.0, -60.0, 0.0),
+            number("Speed", 1.0, 0.01, 10.0),
+            number("MaxGain", 18.0, 0.0, 48.0),
+        ],
+    ),
+    modifier(
+        "Expander",
+        &[
+            ENABLED,
+            number("Threshold", -40.0, -100.0, 0.0),
+            number("Ratio", 2.0, 1.0, 20.0),
+            number("Attack", 0.005, 0.0, 1.0),
+            number("Release", 0.1, 0.0, 5.0),
+        ],
+    ),
+    modifier(
+        "Exciter",
+        &[ENABLED, number("Frequency", 3000.0, 500.0, 16_000.0), number("Amount", 0.3, 0.0, 1.0)],
+    ),
+    modifier(
+        "AutoWah",
+        &[
+            ENABLED,
+            number("Sensitivity", 0.5, 0.0, 1.0),
+            number("Frequency", 250.0, 20.0, 5000.0),
+            number("Range", 3.0, 0.0, 8.0),
+            number("Resonance", 4.0, 0.1, 20.0),
+            mix(1.0),
+        ],
+    ),
+    modifier("Haas", &[ENABLED, number("Delay", 0.012, -0.05, 0.05)]),
+    modifier("AutoPan", &[ENABLED, number("Rate", 0.5, 0.0, 20.0), number("Depth", 1.0, 0.0, 1.0)]),
+    modifier(
+        "Transient",
+        &[ENABLED, number("Attack", 0.0, -1.0, 1.0), number("Sustain", 0.0, -1.0, 1.0)],
+    ),
+    Spec {
+        methods: &["GetLevels", "GetFrequencies"],
+        ..modifier(
+            "Spectrum",
+            &[ENABLED, integer("Bands", 8.0, 1.0, 32.0), number("Smoothing", 0.6, 0.0, 0.99)],
+        )
+    },
 ];
 
 pub fn modifier_spec(class: &str) -> Option<&'static Spec> {

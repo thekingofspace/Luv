@@ -1,3 +1,4 @@
+mod bake;
 mod decode;
 mod device;
 mod dsp;
@@ -8,8 +9,9 @@ mod sources;
 mod spatial;
 pub mod specs;
 
+pub use bake::{MAX_BAKE_SECONDS, Recipe, Stage, bake};
 pub use decode::{Pcm, decode};
-pub use effects::{MeterShared, modifier};
+pub use effects::{MAX_BANDS, MeterShared, ProbeShared, band_center, modifier};
 pub use packet::{Chunk, PacketData, RawFormat, SampleFormat, parse};
 pub use render::Renderer;
 pub use sources::{Capture, Player, PlayerShared, Stream, StreamShared};
@@ -208,12 +210,34 @@ pub trait Processor: Send {
     fn message(&mut self, _context: &Context<'_>, _message: Message) {}
 
     fn rate(&mut self, _rate: f32) {}
+
+    fn tail(&self) -> f32 {
+        f32::INFINITY
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AudioStats {
+    pub load: f32,
+    pub busiest: f32,
+    pub peak: f32,
+    pub clipped: u32,
+    pub late: u32,
+    pub skipped: u32,
+    pub nodes: u32,
+    pub resting: u32,
 }
 
 pub struct AudioStatus {
     rate: AtomicU32,
     late: AtomicU32,
     skipped: AtomicU32,
+    load: AtomicU32,
+    busiest: AtomicU32,
+    peak: AtomicU32,
+    clipped: AtomicU32,
+    nodes: AtomicU32,
+    resting: AtomicU32,
     graphs: AtomicUsize,
     connected: AtomicBool,
     device: Mutex<Option<String>>,
@@ -229,6 +253,12 @@ impl AudioStatus {
             rate: AtomicU32::new(DEFAULT_RATE),
             late: AtomicU32::new(0),
             skipped: AtomicU32::new(0),
+            load: AtomicU32::new(0),
+            busiest: AtomicU32::new(0),
+            peak: AtomicU32::new(0),
+            clipped: AtomicU32::new(0),
+            nodes: AtomicU32::new(0),
+            resting: AtomicU32::new(0),
             graphs: AtomicUsize::new(0),
             connected: AtomicBool::new(true),
             device: Mutex::new(simulated.first().cloned()),
@@ -245,6 +275,42 @@ impl AudioStatus {
 
     pub fn count_skipped(&self) {
         self.skipped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn measure(&self, load: f32, spent: f32, peak: f32, nodes: u32, resting: u32) {
+        self.load.store(load.to_bits(), Ordering::Release);
+        if spent > f32::from_bits(self.busiest.load(Ordering::Acquire)) {
+            self.busiest.store(spent.to_bits(), Ordering::Release);
+        }
+        if peak > f32::from_bits(self.peak.load(Ordering::Acquire)) {
+            self.peak.store(peak.to_bits(), Ordering::Release);
+        }
+        if peak > 1.0 {
+            self.clipped.fetch_add(1, Ordering::Relaxed);
+        }
+        self.nodes.store(nodes, Ordering::Release);
+        self.resting.store(resting, Ordering::Release);
+    }
+
+    fn stats(&self) -> AudioStats {
+        AudioStats {
+            load: f32::from_bits(self.load.load(Ordering::Acquire)),
+            busiest: f32::from_bits(self.busiest.load(Ordering::Acquire)),
+            peak: f32::from_bits(self.peak.load(Ordering::Acquire)),
+            clipped: self.clipped.load(Ordering::Acquire),
+            late: self.late_count(),
+            skipped: self.skipped_count(),
+            nodes: self.nodes.load(Ordering::Acquire),
+            resting: self.resting.load(Ordering::Acquire),
+        }
+    }
+
+    fn reset_stats(&self) {
+        self.busiest.store(0, Ordering::Release);
+        self.peak.store(0, Ordering::Release);
+        self.clipped.store(0, Ordering::Release);
+        self.late.store(0, Ordering::Release);
+        self.skipped.store(0, Ordering::Release);
     }
 
     fn late_count(&self) -> u32 {
@@ -348,6 +414,14 @@ impl AudioSystem {
 
     pub fn skipped(&self) -> u32 {
         self.status.skipped_count()
+    }
+
+    pub fn stats(&self) -> AudioStats {
+        self.status.stats()
+    }
+
+    pub fn reset_stats(&self) {
+        self.status.reset_stats();
     }
 
     pub fn subscribe(&self) -> mpsc::UnboundedReceiver<bool> {

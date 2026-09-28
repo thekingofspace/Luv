@@ -1,8 +1,22 @@
-# 1.9
+# 0.1.12
 
-## Faster
+## Sound
 
-- `Bulk.BulkUpdate` does the whole batch in one step instead of one step per property. Setting two properties on 900 renderables went from 9.3 ms to 4.1 ms.
+- `Sound:Bake` plays a sound through a list of modifiers once, ahead of time, and keeps the result. Playing it costs the same as playing a plain file. 24 sounds through a Reverb, an Echo and a Chorus went from 16.5 percent of the mixer's time to 1.8 percent.
+- A `BakedSound` plays through `Sound:SoundNode`, can be baked again, and `GetBytes` hands it back as a WAV file so it can be saved and loaded next time.
+- Bakes can add a tail for reverb and echo, normalize to a level, trim, change speed, and keep one channel when both sides match.
+- Modifiers with nothing coming in now rest and cost almost nothing. 500 waiting modifiers went from 14 percent of the mixer's time to 1.3 percent. Fades and echo tails still finish.
+- `Sound.MaxVoices` caps how many sounds a window plays at once. A new sound stops the oldest one with the lowest `Priority`, and `Play` returns `false` when nothing can make room.
+- `Sound:Preload` decodes sounds ahead of time so they start at once, and `Sound:Unload` lets them go.
+- `Sound:GetStats` and `Sound:ResetStats`, with `Load`, `BusiestBlock`, `Peak`, `ClippedBlocks`, `Nodes`, `RestingNodes` and the voice counts. `Load`, `Peak`, `ClippedBlocks` and `Voices` are properties of the Sound API too.
+- When luv cannot reach the mixer in time it now fades out over about a millisecond instead of cutting to silence.
+
+## Modifiers
+
+- 11 new modifiers: `AllPass`, `DcBlock`, `SoftClip`, `AutoGain`, `Expander`, `Exciter`, `AutoWah`, `Haas`, `AutoPan`, `Transient` and `Spectrum`.
+- `SoftClip` rounds off peaks before they crackle, and `DcBlock` removes an offset that eats headroom.
+- `AutoGain` holds a sound near one level and reports `CurrentGain`.
+- `Spectrum` measures the sound in up to 32 bands, with `GetLevels` and `GetFrequencies` for visualizers.
 
 ## Coroutines
 
@@ -12,34 +26,3 @@
 - `promise.all` and `promise.race` wait on a whole list. `promise.call`, `promise.resolve`, `promise.reject`, `promise.delay` and `promise.is` are there too.
 - A new `switch` global. `switch.new` builds a table of names to functions that is looked up in Rust, and each call runs its case on a new coroutine.
 - luv reuses the coroutines it makes for engine calls, so a switch, a promise step and a signal invoke all cost less than they did.
-
-## Assets
-
-- `Asset.FromBytes` makes an asset out of bytes you already have, with no file on disk.
-- `Asset.FromBase64` does the same from base64 text, and takes a data URL as it comes.
-- Plugins can hand Luau an asset with `push_asset`, so C can build a picture and pass it straight to a RenderableImage.
-
-## Drawing
-
-- `Renderable.WaitFor` yields until pictures and shaders are ready, so nothing shows up blank on its first frame.
-- Waiting on an asset before you make the renderable keeps its picture on the graphics card for every renderable that uses it.
-- Waiting on a renderable with shaders builds its pipeline, so the first frame it draws costs no more than the next.
-
-## Sound
-
-- A ToSpeaker can shape what it sends to the device with `Channels`, `Balance`, `Bass` and `Treble`.
-- `Sound.LateBlocks` and `Sound.SkippedBlocks` count the blocks that missed the deadline, so crackling can be told apart from a fault in the game.
-- luv no longer throws away the reports the sound card sends when it runs out of sound to play.
-
-## Mods
-
-- `ecall` reads a folder from outside the game, compiles every Luau file in it and mounts the whole folder under `mods`.
-- A mod can require its own scripts with `@self`, read its own files with FS and load its own pictures and sounds with `Asset.Load`.
-- `Fetch` runs the entry once and keeps what it returned. `Drop` forgets that, so the next `Fetch` runs it again.
-- `GetFiles` lists what a mod brought with it.
-- `SetGlobal` puts a value in the globals of Luau, so a game can hand its own functions to mods.
-- Nothing is copied into the game and nothing is written to disk.
-
-## Plugins
-
-- Your editor leaves plugin type files alone, so a file that only makes sense once luv folds it in does not get marked.

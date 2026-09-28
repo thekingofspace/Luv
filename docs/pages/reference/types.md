@@ -136,6 +136,10 @@ Each enum has two types. `XEnum` is one item, and `X_Enum` is the table of all i
 | [SoundModifier](soundmodifier.md) | [NodeObject](nodeobject.md) | The base of every modifier. |
 | `SoundModifiers` | none | Maps each modifier name to its type. See [Modifier list](modifiers.md). |
 | `SoundNodeConfig` | none | Config of `SoundNode` and `FromString`. See [Config](soundnode.md#config). |
+| [BakedSound](bakedsound.md) | [BaseGameObject](basegameobject.md) | A sound played through its modifiers ahead of time. |
+| `BakeConfig` | none | Config of `Sound:Bake`. See [Bake](sound-api.md#bake). |
+| `BakeModifier` | none | One entry of `Modifiers` in a `BakeConfig`. See [Bake](sound-api.md#bake). |
+| [SoundStats](sound-api.md#soundstats) | none | What `Sound:GetStats` returns. |
 | `FromBytesConfig` | none | Config of `FromBytes`. See [Config](frombytes.md#config). |
 | `ToSpeakerConfig` | none | Config of `ToSpeaker`. See [Config](tospeaker.md#config). |
 | `ToBytesConfig` | none | Config of `ToBytes`. See [Config](tobytes.md#config). |
@@ -172,6 +176,17 @@ Every modifier type inherits [SoundModifier](soundmodifier.md).
 | `RingModulatorModifier` | [RingModulator](modifiers.md#ringmodulator) |
 | `StereoWidthModifier` | [StereoWidth](modifiers.md#stereowidth) |
 | `MeterModifier` | [Meter](modifiers.md#meter) |
+| `AllPassModifier` | [AllPass](modifiers.md#allpass) |
+| `DcBlockModifier` | [DcBlock](modifiers.md#dcblock) |
+| `SoftClipModifier` | [SoftClip](modifiers.md#softclip) |
+| `AutoGainModifier` | [AutoGain](modifiers.md#autogain) |
+| `ExpanderModifier` | [Expander](modifiers.md#expander) |
+| `ExciterModifier` | [Exciter](modifiers.md#exciter) |
+| `AutoWahModifier` | [AutoWah](modifiers.md#autowah) |
+| `HaasModifier` | [Haas](modifiers.md#haas) |
+| `AutoPanModifier` | [AutoPan](modifiers.md#autopan) |
+| `TransientModifier` | [Transient](modifiers.md#transient) |
+| `SpectrumModifier` | [Spectrum](modifiers.md#spectrum) |
 
 ## Files and processes
 

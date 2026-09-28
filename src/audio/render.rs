@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 use crossbeam_channel::Receiver;
 
@@ -12,6 +13,7 @@ use super::{
 const LINK_FADE: f32 = 0.005;
 const CLOSE_FADE: f32 = 0.02;
 const QUIET: f32 = 1.0e-6;
+const LOAD_SMOOTHING: f32 = 0.02;
 
 struct Link {
     from: usize,
@@ -28,6 +30,8 @@ struct Slot {
     silent: bool,
     bus: usize,
     moving: Option<usize>,
+    quiet: u32,
+    resting: bool,
 }
 
 struct Bus {
@@ -141,6 +145,8 @@ impl Graph {
                     silent: true,
                     bus: 0,
                     moving: None,
+                    quiet: 0,
+                    resting: false,
                 };
                 let index = match self.free.pop() {
                     Some(index) => {
@@ -268,10 +274,12 @@ impl Graph {
         self.dirty = false;
     }
 
-    fn process(&mut self, rate: f32, input: &mut Block, primary: &mut Block, buses: &mut [Bus]) {
+    fn process(&mut self, rate: f32, input: &mut Block, primary: &mut Block, buses: &mut [Bus]) -> (u32, u32) {
         if self.dirty {
             self.sort();
         }
+        let mut nodes = 0u32;
+        let mut resting = 0u32;
         let Graph {
             slots,
             outputs,
@@ -282,9 +290,33 @@ impl Graph {
             ..
         } = self;
         for &index in order.iter() {
+            let quiet_input = match slots[index].as_ref() {
+                Some(slot) if slot.role == Role::Modifier => slot.links.iter().all(|link| {
+                    (link.gain.settled() && link.gain.value() == 0.0)
+                        || slots[link.from].as_ref().is_none_or(|source| source.silent)
+                }),
+                Some(_) => false,
+                None => continue,
+            };
             let Some(slot) = slots[index].as_mut() else {
                 continue;
             };
+            nodes += 1;
+            if quiet_input {
+                slot.quiet = slot.quiet.saturating_add(1);
+                let rested = slot.quiet as f32 * BLOCK as f32 / rate;
+                if slot.silent && slot.level.settled() && slot.moving.is_none() && rested > slot.processor.tail() {
+                    if !slot.resting {
+                        outputs[index] = SILENCE;
+                        slot.resting = true;
+                    }
+                    resting += 1;
+                    continue;
+                }
+            } else {
+                slot.quiet = 0;
+            }
+            slot.resting = false;
             *input = SILENCE;
             for link in slot.links.iter_mut() {
                 let source = &outputs[link.from];
@@ -346,6 +378,7 @@ impl Graph {
             accumulate(target, &self.outputs[index], &gains);
         }
         self.collect();
+        (nodes, resting)
     }
 
     fn collect(&mut self) {
@@ -388,6 +421,7 @@ pub struct Renderer {
     mix: Block,
     input: Block,
     cursor: usize,
+    load: f32,
 }
 
 impl Renderer {
@@ -402,6 +436,7 @@ impl Renderer {
             mix: SILENCE,
             input: SILENCE,
             cursor: BLOCK,
+            load: 0.0,
         }
     }
 
@@ -482,6 +517,7 @@ impl Renderer {
     }
 
     fn next_block(&mut self) {
+        let started = Instant::now();
         self.drain();
         self.mix = SILENCE;
         let Renderer {
@@ -492,8 +528,12 @@ impl Renderer {
             rate,
             ..
         } = self;
+        let mut nodes = 0;
+        let mut resting = 0;
         for graph in graphs.iter_mut() {
-            graph.process(*rate, input, mix, buses);
+            let (counted, rested) = graph.process(*rate, input, mix, buses);
+            nodes += counted;
+            resting += rested;
         }
         if self.graphs.iter().any(Graph::finished) {
             let (finished, kept): (Vec<Graph>, Vec<Graph>) = self.graphs.drain(..).partition(Graph::finished);
@@ -503,6 +543,7 @@ impl Renderer {
                 graph.retire();
             }
         }
+        let loudest = peak(&self.mix);
         clamp(&mut self.mix);
         for bus in &mut self.buses {
             let Some(outlet) = bus.outlet.as_mut() else {
@@ -517,6 +558,9 @@ impl Renderer {
             }
             bus.mix = SILENCE;
         }
+        let spent = started.elapsed().as_secs_f32() * self.rate / BLOCK as f32;
+        self.load += (spent - self.load) * LOAD_SMOOTHING;
+        self.status.measure(self.load, spent, loudest, nodes, resting);
     }
 
     pub fn render(&mut self, out: &mut [f32], channels: usize) {

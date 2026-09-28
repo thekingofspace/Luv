@@ -30,32 +30,84 @@ luv starts its audio engine the first time a window asks for the Sound API. The 
 | `IsConnected` | `boolean` | `true` | `true` while an output device exists. luv checks about every 2 seconds. Read only. |
 | `LateBlocks` | `number` | `0` | How many times the sound card ran out of sound to play. Read only. See [When sound crackles](#when-sound-crackles). |
 | `SkippedBlocks` | `number` | `0` | How many times luv had no sound ready in time. Read only. See [When sound crackles](#when-sound-crackles). |
+| `ClippedBlocks` | `number` | `0` | How many blocks went over full volume and had to be rounded off. Read only. See [When sound crackles](#when-sound-crackles). |
+| `Load` | `number` | `0` | How much of the time luv has for each block it uses, from 0 to 1. Read only. See [When sound crackles](#when-sound-crackles). |
+| `Peak` | `number` | `0` | The loudest sample since the last [ResetStats](#resetstats). `1` is full volume. Read only. |
+| `Voices` | `number` | `0` | How many sounds of this window are playing. Read only. See [Voices](#voices). |
+| `MaxVoices` | `number` | `0` | The most sounds this window plays at once. `0` means no limit. See [Voices](#voices). |
 | `ActivationChanged` | [Signal](signal.md)`<boolean>` | none | Fires when `IsConnected` changes. See [ActivationChanged](#activationchanged). Read only. |
 
 Setting `Volume` to NaN or infinity errors with `Volume must be a finite number`.
 
 ## When sound crackles
 
-Sound is built in small blocks and handed to the sound card on a deadline. Miss the deadline and the card plays whatever it has, which is a click. A run of those is the crackle or static you hear.
+Sound is built in small blocks and handed to the sound card on a deadline. Miss the deadline and the card plays whatever it has, which is a click. A run of those is the crackle or static you hear. Sound that is too loud crackles too, because it gets cut off at full volume.
 
-Two counters say whether that is happening and which side is late. Both only ever go up, and both stay at 0 on a healthy run.
+These numbers say which of those is happening.
 
-| Counter | What it means |
+| Name | What it means |
 | --- | --- |
+| `Load` | How much of each deadline luv spends building sound, from 0 to 1. Below about 0.5 is healthy. Near 1, blocks start to come late. |
 | `LateBlocks` | The sound card asked for sound and luv was still working, so the card played a gap. This is the machine running out of room. |
-| `SkippedBlocks` | luv could not reach the mixer in time and sent quiet instead. This is luv getting in its own way. |
+| `SkippedBlocks` | luv could not reach the mixer in time. It fades out over about a millisecond instead of cutting off, so you hear a soft tick rather than a crack. |
+| `ClippedBlocks` | The mix went over full volume. luv rounds it off so it does not crack, but it still sounds squashed. |
+| `Peak` | The loudest sample since the last [ResetStats](#resetstats). Above `1` means the mix is too loud. |
+
+Every one of these but `Load` only goes up until you call [ResetStats](#resetstats). [GetStats](#getstats) reads them all at once.
 
 ```luau
+local Process = import("Process")
 local Sound = window:GetAPI("Sound")
 
 Process.Heartbeat:BindHandler("audio", function()
-	if Sound.LateBlocks > 0 or Sound.SkippedBlocks > 0 then
-		print(`sound is behind: {Sound.LateBlocks} late, {Sound.SkippedBlocks} skipped`)
+	local stats = Sound:GetStats()
+	if stats.Load > 0.7 or stats.LateBlocks > 0 then
+		print(`sound is too busy: {stats.Load}`)
+	end
+	if stats.ClippedBlocks > 0 then
+		print(`sound is too loud: {stats.Peak}`)
 	end
 end)
 ```
 
-`LateBlocks` going up while you record the screen, or while a lot of sound plays at once, is the machine being busy rather than a fault in your game. Fewer sounds at once, or a lighter recorder, gives the deadline more room.
+`LateBlocks` going up while you record the screen is the machine being busy, not a fault in your game. A lighter recorder gives the deadline more room.
+
+### What to do about it
+
+| What you see | What helps |
+| --- | --- |
+| `Load` is high or `LateBlocks` goes up | [Bake](#bake) any sound that always goes through the same modifiers. Set [MaxVoices](#voices) so a burst of sounds cannot pile up. Use fewer Reverb and Echo modifiers. |
+| `BusiestBlock` in [GetStats](#getstats) is much higher than `Load` | Something happens now and then that costs a lot. Often it is many sounds starting on the same frame. |
+| `ClippedBlocks` goes up | Turn sounds down, or put a [SoftClip](modifiers.md#softclip) or a [Limiter](modifiers.md#limiter) right before the [ToSpeaker](tospeaker.md). [AutoGain](modifiers.md#autogain) keeps sound from players at one level. |
+| A sound starts late the first time | [Preload](#preload) it, so it is decoded before it is needed. |
+| `SkippedBlocks` goes up | It can go up for a moment while an output device opens. Anything more is worth reporting. |
+
+Modifiers with nothing coming in already cost almost nothing. See [Resting](soundmodifier.md#resting).
+
+## Voices
+
+Every sound that plays is a voice, and each one costs the mixer some time. A burst of sounds, like fifty coins at once, can push `Load` past the deadline.
+
+Set `MaxVoices` to cap how many sounds of this window play at once.
+
+```luau
+Sound.MaxVoices = 24
+```
+
+When a sound starts and the cap is reached, luv stops a sound that is already playing to make room. It picks the one with the lowest [Priority](soundnode.md#properties), and the oldest among those. That sound fires [Stopped](soundnode.md#stopped) like any other stop.
+
+When every playing sound has a higher `Priority` than the new one, luv stops nothing and the new sound does not start. [Play](soundnode.md#play) returns `false` so you can tell.
+
+```luau
+local music = Sound:SoundNode("theme.ogg", { Priority = 10, Looping = true })
+local coin = Sound:SoundNode("coin.wav", { Priority = 1 })
+```
+
+The music is never stopped to make room for a coin. A new coin can take the place of an older one.
+
+Only [Play](soundnode.md#play) is checked. [PlayOneShot](soundnode.md#playoneshot) plays on top of a node that is already there, and [Resume](soundnode.md#resume) brings back a sound that already had a place. A paused sound is not a voice.
+
+`0`, the default, means no limit. [GetStats](#getstats) reports `StolenVoices`, the sounds stopped to make room, and `RefusedVoices`, the ones that did not start.
 
 ## Functions
 
@@ -73,6 +125,11 @@ end)
 | [ResumeAll](#resumeall)() | none | no |
 | [GetDevices](#getdevices)() | `{ string }` | yes |
 | [DeviceExists](#deviceexists)(name) | `boolean` | yes |
+| [Bake](#bake)(asset, config) | [BakedSound](bakedsound.md) | yes |
+| [Preload](#preload)(...) | `number` | yes |
+| [Unload](#unload)(...) | `number` | no |
+| [GetStats](#getstats)() | [SoundStats](#soundstats) | no |
+| [ResetStats](#resetstats)() | none | no |
 
 Every function is a method. Call it with `:`, like `Sound:ToSpeaker()`.
 
@@ -266,6 +323,123 @@ if Sound:DeviceExists("Headphones (USB Audio)") then
 	voice.Device = "Headphones (USB Audio)"
 end
 ```
+
+### Bake
+
+```luau
+Sound:Bake(asset: Asset | BakedSound | string, config: BakeConfig?): BakedSound
+```
+
+Plays a sound through a list of modifiers once, ahead of time, and keeps the result as a [BakedSound](bakedsound.md). Playing it costs the same as playing any file, however many modifiers went into it. This yields the calling coroutine while it works, and the work happens off the game thread.
+
+```luau
+local explosion = Sound:Bake("explosion.wav", {
+	Modifiers = {
+		{ Kind = "LowPass", Cutoff = 3000 },
+		{ Kind = "Reverb", RoomSize = 0.8, Mix = 0.4 },
+		{ Kind = "SoftClip" },
+	},
+	Tail = 2,
+	Normalize = -1,
+})
+
+local boom = Sound:SoundNode(explosion)
+boom.Input:Link(Sound:ToSpeaker().Output)
+boom:Play()
+```
+
+Use it for any sound that always goes through the same modifiers. A gunshot with its room, a footstep with its filter, a voice line with its radio sound. See [Baking sounds](../manual/sound.md#baking-sounds).
+
+The config, of type `BakeConfig`. Every field is optional.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `Modifiers` | `{ BakeModifier }` | none | The modifiers, in order. Each one is a table with `Kind` and any values of that kind, like `{ Kind = "Echo", Delay = 0.2 }`. Every kind in the [Modifier list](modifiers.md) works. |
+| `Tail` | `number` | `0` | Seconds to keep going after the sound ends, so a Reverb or an Echo can ring out. 0 to 60. |
+| `Normalize` | `number` | none | Turns the result up or down so its loudest sample lands on this level, in dB. `-1` is just under full volume. -60 to 0. |
+| `Volume` | `number` | `1` | The volume of the sound going in. 0 to 10. |
+| `Speed` | `number` | `1` | How fast the sound goes in. It changes the pitch too, like `PlaybackSpeed`. 0.01 to 32. |
+| `Start` | `number` | `0` | Where in the sound to start, in seconds. |
+| `Length` | `number` | none | How many seconds of the sound to use. It fades out over 10 ms at the cut, so it does not click. |
+| `Channels` | `number` | none | `1` or `2`. Leave it out and luv keeps one channel when both sides came out the same, which halves the memory. |
+| `SampleRate` | `number` | `Sound.SampleRate` | The sample rate of the result. Leave it out, so nothing has to be converted while it plays. |
+
+Silence at the end is trimmed off, so a long `Tail` costs nothing once the ring has died away. A baked sound can be at most 600 seconds long.
+
+In a test with 24 sounds playing at once, each through a Reverb, an Echo and a Chorus, the mixer used 16.5 percent of its time. Baked, the same 24 sounds used 1.8 percent.
+
+| Message | Cause |
+| --- | --- |
+| `'<kind>' is not a sound modifier` | A `Kind` is not in the [Modifier list](modifiers.md). |
+| `Modifiers[<n>] needs a Kind, like "Reverb"` | An entry has no `Kind`. |
+| `<name> is not a valid member of <kind>` | An entry sets a value that kind does not have. |
+| `Channels must be 1 or 2` | `Channels` is something else. |
+| `Length must be a number of seconds above 0` | `Length` is 0 or less. |
+| `cannot bake the sound: a baked sound can be at most 600 seconds long` | The sound and its tail run longer than that. |
+
+### Preload
+
+```luau
+Sound:Preload(...: Asset | string): number
+```
+
+Decodes sounds before you need them and keeps them ready. Returns how many seconds of sound that was. This yields the calling coroutine while it works.
+
+Decoding a large file takes time, and doing it the moment a sound should play makes it start late. Preload what a level needs while the level loads.
+
+```luau
+Sound:Preload("music/forest.ogg", "coin.wav", "jump.wav")
+```
+
+Every [SoundNode](#soundnode) for those files then starts at once, and they all share the one decoded copy. The sounds stay decoded until you [Unload](#unload) them or the window closes.
+
+### Unload
+
+```luau
+Sound:Unload(...: string): number
+```
+
+Lets go of sounds that [Preload](#preload) kept, and returns how many it let go. Pass the paths you preloaded, with or without the extension. Pass nothing to let go of all of them.
+
+A node that still uses a sound keeps it. Unload only stops Preload from holding on.
+
+### GetStats
+
+```luau
+Sound:GetStats(): SoundStats
+```
+
+Reads every number about how the mixer is doing at once. See [SoundStats](#soundstats) and [When sound crackles](#when-sound-crackles).
+
+### ResetStats
+
+```luau
+Sound:ResetStats()
+```
+
+Sets `Peak`, `BusiestBlock`, `ClippedBlocks`, `LateBlocks`, `SkippedBlocks`, `StolenVoices` and `RefusedVoices` back to 0. Call it just before a part of the game you want to measure.
+
+Every window mixes into the same device, so the numbers of the mixer are shared. Resetting them in one window resets them in all. `StolenVoices` and `RefusedVoices` belong to each window.
+
+## SoundStats
+
+What [GetStats](#getstats) returns.
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `Load` | `number` | How much of the time luv has for each block it uses, on average, from 0 to 1. |
+| `BusiestBlock` | `number` | The slowest single block since the last ResetStats, on the same scale as `Load`. Above 1 means that block was late. |
+| `Peak` | `number` | The loudest sample since the last ResetStats, before it is rounded off. |
+| `ClippedBlocks` | `number` | Blocks that went over full volume. |
+| `LateBlocks` | `number` | The same as the [property](#properties). |
+| `SkippedBlocks` | `number` | The same as the [property](#properties). |
+| `Nodes` | `number` | Every node luv is mixing, in every window. |
+| `RestingNodes` | `number` | Modifiers that rest because nothing comes in. See [Resting](soundmodifier.md#resting). |
+| `Voices` | `number` | Sounds of this window playing now. |
+| `MaxVoices` | `number` | The cap. `0` means none. |
+| `StolenVoices` | `number` | Sounds stopped to make room. |
+| `RefusedVoices` | `number` | Sounds that did not start because of the cap. |
+| `SampleRate` | `number` | The sample rate of the mixer in Hz. |
 
 ## Signals
 

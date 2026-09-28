@@ -1,6 +1,8 @@
+mod baked;
 mod node;
 mod packet;
 
+pub use baked::BakedSound;
 pub use node::{Port, SoundObject};
 pub use packet::AudioPacket;
 
@@ -19,8 +21,8 @@ use super::{Asset, GameObject, Signal};
 use crate::api::load_asset;
 use crate::audio::specs::{FROM_BYTES, FROM_STRING, Family, MODIFIERS, SOUND_NODE, Spec, TO_BYTES, TO_SPEAKER, modifier_spec};
 use crate::audio::{
-    Action, AudioSystem, Batch, Capture, Event, EventReceiver, GraphId, Listener, MeterShared, NodeId, Pcm, Player,
-    PlayerShared, Speaker, Stream, StreamShared, decode, modifier,
+    Action, AudioSystem, Batch, Capture, Event, EventReceiver, GraphId, Listener, MAX_BANDS, MeterShared, NodeId, Pcm,
+    Player, PlayerShared, ProbeShared, Recipe, Speaker, Stage, Stream, StreamShared, bake, decode, modifier,
 };
 use crate::runtime::{Engine, Scheduler};
 use crate::window::WindowSystem;
@@ -46,9 +48,42 @@ pub(super) struct Graph {
     listener: Cell<Listener>,
     held: RefCell<Vec<NodeId>>,
     activation: AnyUserData,
+    max_voices: Cell<usize>,
+    stamps: Cell<u64>,
+    stolen: Cell<u64>,
+    refused: Cell<u64>,
+    preloaded: RefCell<BTreeMap<String, Arc<Pcm>>>,
 }
 
+type Voice = (AnyUserData, f64, u64);
+
 impl Graph {
+    fn stamp(&self) -> u64 {
+        let stamp = self.stamps.get() + 1;
+        self.stamps.set(stamp);
+        stamp
+    }
+
+    fn voices(&self, except: NodeId) -> Vec<Voice> {
+        self.nodes
+            .borrow()
+            .iter()
+            .filter(|(id, _)| **id != except)
+            .filter_map(|(_, node)| {
+                let (priority, order) = node.borrow::<SoundObject>().ok()?.voice()?;
+                Some((node.clone(), priority, order))
+            })
+            .collect()
+    }
+
+    fn playing(&self) -> usize {
+        self.nodes
+            .borrow()
+            .values()
+            .filter(|node| node.borrow::<SoundObject>().is_ok_and(|object| object.voice().is_some()))
+            .count()
+    }
+
     fn alive(&self) -> Result<()> {
         if self.open.get() { Ok(()) } else { Err(closed()) }
     }
@@ -243,6 +278,11 @@ impl Sounds {
             listener: Cell::new(Listener::default()),
             held: RefCell::new(Vec::new()),
             activation: lua.create_userdata(Signal::named("ActivationChanged"))?,
+            max_voices: Cell::new(0),
+            stamps: Cell::new(0),
+            stolen: Cell::new(0),
+            refused: Cell::new(0),
+            preloaded: RefCell::new(BTreeMap::new()),
         });
         graph.send(Action::Focus(self.focused.get()));
         tokio::task::spawn_local(run(lua.clone(), graph.clone(), events, connections));
@@ -327,9 +367,143 @@ fn player(
         transport: Transport::Stopped,
         epoch: 0,
         hint: 0.0,
+        order: 0,
     });
     let processor = Box::new(Player::new(pcm, shared, graph.audio.rate() as f32));
     node::create(lua, graph, spec, state, processor, config)
+}
+
+async fn source_pcm(engine: &Arc<Engine>, source: Value, method: &str) -> Result<(Arc<Pcm>, Option<String>)> {
+    let (key, bytes, kind) = match source {
+        Value::String(path) => {
+            let path = path.to_str()?.to_string();
+            let (relative, data) = load_asset(engine.clone(), path).await?;
+            let kind = extension(&relative);
+            (relative, data, kind)
+        }
+        Value::UserData(userdata) if userdata.is::<Asset>() => {
+            let asset = userdata.borrow::<Asset>()?;
+            (
+                asset.path().to_owned(),
+                asset.data()?,
+                asset.extension().map(str::to_ascii_lowercase),
+            )
+        }
+        Value::UserData(userdata) if userdata.is::<BakedSound>() => {
+            let baked = userdata.borrow::<BakedSound>()?;
+            return Ok((baked.pcm()?, baked.source().map(str::to_owned)));
+        }
+        other => {
+            return Err(runtime(format!(
+                "{method} expects an Asset, a BakedSound or an asset path, got {}",
+                other.type_name()
+            )));
+        }
+    };
+    let pcm = load_pcm(engine, Some(key.clone()), bytes, kind).await?;
+    Ok((pcm, Some(key)))
+}
+
+fn option<T: mlua::FromLua>(config: &Option<Table>, key: &str) -> Result<Option<T>> {
+    match config {
+        Some(config) => config.get::<Option<T>>(key),
+        None => Ok(None),
+    }
+}
+
+fn finite(name: &str, value: Option<f64>, default: f64, min: f64, max: f64) -> Result<f64> {
+    match value {
+        None => Ok(default),
+        Some(value) if value.is_finite() => Ok(value.clamp(min, max)),
+        Some(_) => Err(runtime(format!("{name} must be a finite number"))),
+    }
+}
+
+fn stages(lua: &Lua, config: &Option<Table>) -> Result<Vec<Stage>> {
+    let Some(list) = option::<Table>(config, "Modifiers")? else {
+        return Ok(Vec::new());
+    };
+    let mut stages = Vec::new();
+    for (position, entry) in list.sequence_values::<Value>().enumerate() {
+        let Value::Table(entry) = entry? else {
+            return Err(runtime(format!(
+                "Modifiers[{}] must be a table with a Kind, like {{ Kind = \"Reverb\" }}",
+                position + 1
+            )));
+        };
+        let kind: Option<String> = entry.get("Kind")?;
+        let Some(kind) = kind else {
+            return Err(runtime(format!("Modifiers[{}] needs a Kind, like \"Reverb\"", position + 1)));
+        };
+        let Some(spec) = modifier_spec(&kind) else {
+            return Err(runtime(format!("'{kind}' is not a sound modifier")));
+        };
+        let mut params = Vec::new();
+        for pair in entry.pairs::<Value, Value>() {
+            let (key, value) = pair?;
+            let Value::String(key) = key else {
+                return Err(runtime(format!("the keys of Modifiers[{}] must be strings", position + 1)));
+            };
+            let key = key.to_str()?.to_string();
+            if key == "Kind" {
+                continue;
+            }
+            let Some(index) = spec.param(&key) else {
+                return Err(runtime(format!("{key} is not a valid member of {kind}")));
+            };
+            params.push((index, node::convert(lua, &spec.params[index], value)?));
+        }
+        stages.push(Stage { class: kind, params });
+    }
+    Ok(stages)
+}
+
+fn recipe(lua: &Lua, config: &Option<Table>, rate: u32) -> Result<Recipe> {
+    let channels = match option::<f64>(config, "Channels")? {
+        None => None,
+        Some(channels) if channels == 1.0 || channels == 2.0 => Some(channels as usize),
+        Some(_) => return Err(runtime("Channels must be 1 or 2")),
+    };
+    let normalize = match option::<f64>(config, "Normalize")? {
+        None => None,
+        Some(target) if target.is_finite() => Some(target.clamp(-60.0, 0.0)),
+        Some(_) => return Err(runtime("Normalize must be a finite number of decibels")),
+    };
+    let length = match option::<f64>(config, "Length")? {
+        None => None,
+        Some(length) if length.is_finite() && length > 0.0 => Some(length),
+        Some(_) => return Err(runtime("Length must be a number of seconds above 0")),
+    };
+    Ok(Recipe {
+        rate: finite("SampleRate", option(config, "SampleRate")?, f64::from(rate), 8_000.0, 384_000.0)? as u32,
+        stages: stages(lua, config)?,
+        start: finite("Start", option(config, "Start")?, 0.0, 0.0, f64::MAX)?,
+        length,
+        speed: finite("Speed", option(config, "Speed")?, 1.0, 0.01, 32.0)?,
+        volume: finite("Volume", option(config, "Volume")?, 1.0, 0.0, 10.0)?,
+        tail: finite("Tail", option(config, "Tail")?, 0.0, 0.0, 60.0)?,
+        normalize,
+        channels,
+    })
+}
+
+fn stats(lua: &Lua, graph: &Graph) -> Result<Table> {
+    let stats = graph.audio.stats();
+    let table = lua.create_table()?;
+    table.set("Load", f64::from(stats.load))?;
+    table.set("BusiestBlock", f64::from(stats.busiest))?;
+    table.set("Peak", f64::from(stats.peak))?;
+    table.set("ClippedBlocks", stats.clipped)?;
+    table.set("LateBlocks", stats.late)?;
+    table.set("SkippedBlocks", stats.skipped)?;
+    table.set("Nodes", stats.nodes)?;
+    table.set("RestingNodes", stats.resting)?;
+    table.set("Voices", graph.playing())?;
+    table.set("MaxVoices", graph.max_voices.get())?;
+    table.set("StolenVoices", graph.stolen.get())?;
+    table.set("RefusedVoices", graph.refused.get())?;
+    table.set("SampleRate", graph.audio.rate())?;
+    Ok(table)
 }
 
 pub struct SoundApi {
@@ -367,6 +541,18 @@ impl UserData for SoundApi {
         fields.add_field_method_get("IsConnected", |_, this| Ok(this.graph()?.audio.connected()));
         fields.add_field_method_get("LateBlocks", |_, this| Ok(this.graph()?.audio.late()));
         fields.add_field_method_get("SkippedBlocks", |_, this| Ok(this.graph()?.audio.skipped()));
+        fields.add_field_method_get("ClippedBlocks", |_, this| Ok(this.graph()?.audio.stats().clipped));
+        fields.add_field_method_get("Load", |_, this| Ok(f64::from(this.graph()?.audio.stats().load)));
+        fields.add_field_method_get("Peak", |_, this| Ok(f64::from(this.graph()?.audio.stats().peak)));
+        fields.add_field_method_get("Voices", |_, this| Ok(this.graph()?.playing()));
+        fields.add_field_method_get("MaxVoices", |_, this| Ok(this.graph()?.max_voices.get()));
+        fields.add_field_method_set("MaxVoices", |_, this, most: f64| {
+            if !most.is_finite() || most < 0.0 {
+                return Err(runtime("MaxVoices must be 0 or more, where 0 means no limit"));
+            }
+            this.graph()?.max_voices.set(most.round().min(4096.0) as usize);
+            Ok(())
+        });
         fields.add_field_method_get("ActivationChanged", |_, this| Ok(this.graph()?.activation.clone()));
     }
 
@@ -376,32 +562,65 @@ impl UserData for SoundApi {
             |lua, (api, source, config): (AnyUserData, Value, Option<Table>)| async move {
                 let graph = graph_of(&api)?;
                 let engine = engine(&lua)?;
-                let (key, bytes, kind) = match source {
-                    Value::String(path) => {
-                        let path = path.to_str()?.to_string();
-                        let (relative, data) = load_asset(engine.clone(), path).await?;
-                        let kind = extension(&relative);
-                        (relative, data, kind)
-                    }
-                    Value::UserData(userdata) if userdata.is::<Asset>() => {
-                        let asset = userdata.borrow::<Asset>()?;
-                        (
-                            asset.path().to_owned(),
-                            asset.data()?,
-                            asset.extension().map(str::to_ascii_lowercase),
-                        )
-                    }
-                    other => {
-                        return Err(runtime(format!(
-                            "SoundNode expects an Asset or an asset path, got {}",
-                            other.type_name()
-                        )));
-                    }
-                };
-                let pcm = load_pcm(&engine, Some(key.clone()), bytes, kind).await?;
-                player(&lua, &graph, &SOUND_NODE, pcm, Some(key), config)
+                let (pcm, key) = source_pcm(&engine, source, "SoundNode").await?;
+                player(&lua, &graph, &SOUND_NODE, pcm, key, config)
             },
         );
+        methods.add_async_function(
+            "Bake",
+            |lua, (api, source, config): (AnyUserData, Value, Option<Table>)| async move {
+                let graph = graph_of(&api)?;
+                let engine = engine(&lua)?;
+                let recipe = recipe(&lua, &config, graph.audio.rate())?;
+                let (pcm, key) = source_pcm(&engine, source, "Bake").await?;
+                let baked = tokio::task::spawn_blocking(move || bake(pcm, recipe))
+                    .await
+                    .map_err(mlua::Error::external)?
+                    .map_err(|error| runtime(format!("cannot bake the sound: {error}")))?;
+                lua.create_userdata(BakedSound::new(Arc::new(baked), key))
+            },
+        );
+        methods.add_async_function("Preload", |lua, (api, sources): (AnyUserData, mlua::Variadic<Value>)| async move {
+            graph_of(&api)?;
+            let engine = engine(&lua)?;
+            let mut seconds = 0.0;
+            for source in sources {
+                let (pcm, key) = source_pcm(&engine, source, "Preload").await?;
+                seconds += pcm.seconds();
+                if let Some(key) = key {
+                    graph_of(&api)?.preloaded.borrow_mut().insert(key, pcm);
+                }
+            }
+            Ok(seconds)
+        });
+        methods.add_function("Unload", |_, (api, paths): (AnyUserData, mlua::Variadic<String>)| {
+            let graph = graph_of(&api)?;
+            let mut preloaded = graph.preloaded.borrow_mut();
+            if paths.is_empty() {
+                let count = preloaded.len();
+                preloaded.clear();
+                return Ok(count);
+            }
+            Ok(paths
+                .iter()
+                .filter(|path| {
+                    let name = path.trim_start_matches("./");
+                    let found = preloaded
+                        .keys()
+                        .find(|key| key.as_str() == name || key.rsplit_once('.').is_some_and(|(stem, _)| stem == name))
+                        .cloned();
+                    found.is_some_and(|key| preloaded.remove(&key).is_some())
+                })
+                .count())
+        });
+        methods.add_function("GetStats", |lua, api: AnyUserData| stats(lua, &*graph_of(&api)?));
+        methods.add_function("ResetStats", |_, api: AnyUserData| {
+            let graph = graph_of(&api)?;
+            graph.audio.reset_stats();
+            graph.stolen.set(0);
+            graph.refused.set(0);
+            Ok(())
+        });
         methods.add_async_function(
             "FromString",
             |lua, (api, data, config): (AnyUserData, Value, Option<Table>)| async move {
@@ -454,11 +673,17 @@ impl UserData for SoundApi {
                     )));
                 };
                 let meter = (kind == "Meter").then(MeterShared::new);
-                let processor = modifier(&kind, graph.audio.rate() as f32, meter.clone())
+                let probe = match kind.as_str() {
+                    "AutoGain" => Some(ProbeShared::new(1)),
+                    "Spectrum" => Some(ProbeShared::new(MAX_BANDS)),
+                    _ => None,
+                };
+                let processor = modifier(&kind, graph.audio.rate() as f32, meter.clone(), probe.clone())
                     .ok_or_else(|| runtime(format!("'{kind}' is not a sound modifier")))?;
-                let state = match (kind.as_str(), meter) {
-                    ("Gain", _) => State::Gain(None),
-                    (_, Some(meter)) => State::Meter(meter),
+                let state = match (kind.as_str(), meter, probe) {
+                    ("Gain", _, _) => State::Gain(None),
+                    (_, Some(meter), _) => State::Meter(meter),
+                    (_, _, Some(probe)) => State::Probe(probe),
                     _ => State::Plain,
                 };
                 node::create(lua, &graph, spec, state, processor, config)

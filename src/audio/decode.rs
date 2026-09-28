@@ -182,3 +182,55 @@ pub fn decode(data: Arc<[u8]>, extension: Option<&str>) -> Result<Pcm, String> {
     }
     sink.finish()
 }
+
+impl Pcm {
+    pub fn from_interleaved(rate: u32, channels: usize, interleaved: &[f32]) -> Result<Pcm, String> {
+        let channels = channels.clamp(1, 2);
+        let frames = interleaved.len() / channels;
+        if frames == 0 {
+            return Err("the sound does not hold any audio".to_owned());
+        }
+        if rate == 0 {
+            return Err("the sound needs a sample rate above 0".to_owned());
+        }
+        let samples = interleaved[..frames * channels].iter().map(|sample| quantize(*sample)).collect();
+        Ok(Pcm {
+            rate,
+            channels,
+            frames,
+            samples,
+        })
+    }
+
+    pub fn peak(&self) -> f32 {
+        let loudest = self.samples.iter().map(|sample| sample.unsigned_abs()).max().unwrap_or(0);
+        f32::from(loudest) * SCALE
+    }
+
+    pub fn memory(&self) -> usize {
+        self.samples.len() * 2
+    }
+
+    pub fn wav(&self) -> Vec<u8> {
+        let channels = self.channels as u16;
+        let data = (self.samples.len() * 2) as u32;
+        let block = channels * 2;
+        let mut bytes = Vec::with_capacity(44 + data as usize);
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&channels.to_le_bytes());
+        bytes.extend_from_slice(&self.rate.to_le_bytes());
+        bytes.extend_from_slice(&(self.rate * u32::from(block)).to_le_bytes());
+        bytes.extend_from_slice(&block.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data.to_le_bytes());
+        for sample in self.samples.iter() {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        bytes
+    }
+}

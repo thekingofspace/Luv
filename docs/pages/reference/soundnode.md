@@ -24,6 +24,7 @@ It also has every member of [NodeObject](nodeobject.md).
 | `Looping` | `boolean` | `false` | none | Plays the loop part again and again. See [Looping](#looping). |
 | `LoopStart` | `number` | `0` | 0 or more | Where the loop part starts, in seconds. |
 | `LoopEnd` | `number` | `0` | 0 or more | Where the loop part ends, in seconds. `0` means the end of the file. |
+| `Priority` | `number` | `1` | 0 to 10 | How much this sound matters when too many play at once. See [Voices](sound-api.md#voices). |
 | `PlayPosition` | `number` | `0` | 0 to `Length` | Where the main sound is, in seconds. See [PlayPosition](#playposition). |
 | `Length` | `number` | none | none | The length of the file in seconds. Read only. |
 | `IsPlaying` | `boolean` | `false` | none | `true` while the main sound plays. Read only. |
@@ -70,10 +71,12 @@ The value is clamped to 0 to `Length`. A value that is not a finite number error
 ### Play
 
 ```luau
-node:Play()
+node:Play(): boolean
 ```
 
-Starts the main sound and fires [Started](#started).
+Starts the main sound and fires [Started](#started). Returns `true` when it started.
+
+Returns `false` when [MaxVoices](sound-api.md#voices) turned it away. Then nothing plays and Started does not fire.
 
 - When the node is stopped, it starts at `PlayPosition`. From `0` it starts at full volume right away. From a later point it fades in over 10 ms.
 - When the node is playing or paused, it starts again from `0`. The old sound fades out over 10 ms.
@@ -215,6 +218,7 @@ The config table of [Sound:SoundNode](sound-api.md#soundnode) and [Sound:FromStr
 | `Looping` | `boolean` | `false` | Whether the loop part repeats. |
 | `LoopStart` | `number` | `0` | Where the loop part starts, in seconds. |
 | `LoopEnd` | `number` | `0` | Where the loop part ends, in seconds. |
+| `Priority` | `number` | `1` | How much this sound matters when too many play at once. |
 | `PlayPosition` | `number` | `0` | Where the first [Play](#play) starts, in seconds. |
 
 ## FromString

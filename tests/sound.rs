@@ -1242,3 +1242,484 @@ results = {
     );
     assert_eq!(number("clamped"), 2.0, "Channels holds to 1 or 2");
 }
+
+#[tokio::test]
+async fn the_new_modifiers_shape_the_sound() {
+    let (outcome, _) = run_sound(
+        vec![
+            ("assets/tone.wav", tone(375.0, 1.0, 0.5)),
+            ("assets/quiet.wav", tone(375.0, 2.0, 0.05)),
+        ],
+        &script(
+            r#"
+local function through(asset, chain, seconds)
+    local node = Sound:SoundNode(asset, { Looping = true })
+    local speaker = Sound:ToSpeaker()
+    local previous = node
+    for _, modifier in chain do
+        previous.Input:Link(modifier.Output)
+        previous = modifier
+    end
+    previous.Input:Link(speaker.Output)
+    node:Play()
+    sleep(seconds * 1000)
+    takeSpeaker()
+    sleep(150)
+    local measured = takeSpeaker()
+    node:Destroy()
+    speaker:Destroy()
+    for _, modifier in chain do
+        modifier:Destroy()
+    end
+    sleep(40)
+    takeSpeaker()
+    return measured
+end
+
+local kinds = {
+    "AllPass", "DcBlock", "SoftClip", "AutoGain", "Expander", "Exciter", "AutoWah", "Haas", "AutoPan",
+    "Transient", "Spectrum",
+}
+for _, kind in kinds do
+    local modifier = Sound:Modifier(kind)
+    assert(modifier.ClassName == kind, kind)
+    assert(modifier.Enabled == true, kind)
+    modifier:Destroy()
+end
+
+results = {}
+results.plain = through("tone.wav", {}, 0.1).peak
+results.clipped = through("tone.wav", { Sound:Modifier("SoftClip", { Ceiling = -12, Knee = 0 }) }, 0.1).peak
+
+local autoGain = Sound:Modifier("AutoGain", { Target = -6, Speed = 0.1 })
+results.quietPlain = through("quiet.wav", {}, 0.1).peak
+local node = Sound:SoundNode("quiet.wav", { Looping = true })
+local speaker = Sound:ToSpeaker()
+node.Input:Link(autoGain.Output)
+autoGain.Input:Link(speaker.Output)
+node:Play()
+sleep(900)
+takeSpeaker()
+sleep(150)
+results.lifted = takeSpeaker().peak
+results.currentGain = autoGain.CurrentGain
+node:Destroy()
+speaker:Destroy()
+sleep(40)
+takeSpeaker()
+
+results.expanded = through("quiet.wav", { Sound:Modifier("Expander", { Threshold = -10, Ratio = 4 }) }, 0.2).peak
+
+local spectrum = Sound:Modifier("Spectrum", { Bands = 10 })
+local listened = Sound:SoundNode("tone.wav", { Looping = true })
+local out = Sound:ToSpeaker()
+listened.Input:Link(spectrum.Output)
+spectrum.Input:Link(out.Output)
+listened:Play()
+sleep(300)
+local levels = spectrum:GetLevels()
+local frequencies = spectrum:GetFrequencies()
+results.bandCount = #levels
+results.frequencyCount = #frequencies
+local loudest, loudestIndex = 0, 0
+for index, level in levels do
+    if level > loudest then
+        loudest, loudestIndex = level, index
+    end
+end
+results.loudestFrequency = frequencies[loudestIndex]
+local rising = true
+for index = 2, #frequencies do
+    rising = rising and frequencies[index] > frequencies[index - 1]
+end
+results.rising = rising
+listened:Destroy()
+out:Destroy()
+"#,
+        ),
+    )
+    .await;
+    outcome.assert_clean();
+    let results: Table = outcome.global("results");
+    let plain = number(&results, "plain");
+    assert!(plain > 0.45, "the plain tone should reach the speaker, got {plain}");
+    let clipped = number(&results, "clipped");
+    assert!(clipped < 0.26, "SoftClip at -12 dB should hold the peak near 0.25, got {clipped}");
+    assert!(clipped > 0.2, "SoftClip should not silence the tone, got {clipped}");
+    let lifted = number(&results, "lifted");
+    let quiet = number(&results, "quietPlain");
+    assert!(lifted > quiet * 3.0, "AutoGain should lift a quiet tone, got {lifted} from {quiet}");
+    assert!(number(&results, "currentGain") > 6.0, "AutoGain should report the gain it uses");
+    let expanded = number(&results, "expanded");
+    assert!(expanded < quiet * 0.5, "Expander should push a quiet tone down, got {expanded} from {quiet}");
+    assert_eq!(number(&results, "bandCount"), 10.0);
+    assert_eq!(number(&results, "frequencyCount"), 10.0);
+    assert!(flag(&results, "rising"), "the band frequencies should rise");
+    let loudest = number(&results, "loudestFrequency");
+    assert!(
+        (200.0..700.0).contains(&loudest),
+        "a 375 Hz tone should land in the band near it, got {loudest}"
+    );
+}
+
+#[tokio::test]
+async fn quiet_modifiers_rest_without_cutting_tails() {
+    let (outcome, _) = run_sound(
+        vec![
+            ("assets/tone.wav", tone(375.0, 1.0, 0.5)),
+            ("assets/blip.wav", tone(375.0, 0.1, 0.5)),
+        ],
+        &script(
+            r#"
+local idle = Sound:SoundNode("tone.wav")
+local speaker = Sound:ToSpeaker()
+local previous = idle
+local chain = {}
+for index = 1, 20 do
+    local modifier = Sound:Modifier(if index % 2 == 0 then "LowPass" else "Gain")
+    previous.Input:Link(modifier.Output)
+    previous = modifier
+    table.insert(chain, modifier)
+end
+previous.Input:Link(speaker.Output)
+sleep(700)
+results = {}
+results.restingIdle = Sound:GetStats().RestingNodes
+idle:Play()
+sleep(200)
+results.restingPlaying = Sound:GetStats().RestingNodes
+takeSpeaker()
+sleep(100)
+results.playedPeak = takeSpeaker().peak
+idle:Stop()
+sleep(100)
+
+local blip = Sound:SoundNode("blip.wav")
+local echo = Sound:Modifier("Echo", { Delay = 0.4, Feedback = 0, Mix = 1 })
+local out = Sound:ToSpeaker()
+blip.Input:Link(echo.Output)
+echo.Input:Link(out.Output)
+sleep(700)
+blip:Play()
+sleep(250)
+takeSpeaker()
+sleep(300)
+results.echoPeak = takeSpeaker().peak
+
+local fader = Sound:Modifier("Gain")
+local faded = Sound:SoundNode("tone.wav")
+local third = Sound:ToSpeaker()
+faded.Input:Link(fader.Output)
+fader.Input:Link(third.Output)
+sleep(700)
+fader:Fade(0, 0.3)
+sleep(600)
+takeSpeaker()
+faded:Play()
+sleep(100)
+takeSpeaker()
+sleep(100)
+results.fadedPeak = takeSpeaker().peak
+"#,
+        ),
+    )
+    .await;
+    outcome.assert_clean();
+    let results: Table = outcome.global("results");
+    assert!(
+        number(&results, "restingIdle") >= 20.0,
+        "a chain with nothing playing into it should rest, got {}",
+        number(&results, "restingIdle")
+    );
+    assert!(
+        number(&results, "restingPlaying") < number(&results, "restingIdle"),
+        "a chain with sound going through should wake up"
+    );
+    assert!(number(&results, "playedPeak") > 0.4, "a woken chain should pass the sound");
+    assert!(
+        number(&results, "echoPeak") > 0.2,
+        "an echo that arrives after the sound ends must not be cut, got {}",
+        number(&results, "echoPeak")
+    );
+    assert!(
+        number(&results, "fadedPeak") < 0.01,
+        "a fade that ran while the chain was quiet must still finish, got {}",
+        number(&results, "fadedPeak")
+    );
+}
+
+#[tokio::test]
+async fn baking_renders_a_sound_through_its_modifiers_once() {
+    let (outcome, _) = run_sound(
+        vec![("assets/tone.wav", tone(375.0, 1.0, 0.5))],
+        &script(
+            r#"
+results = {}
+local halved = Sound:Bake("tone.wav", { Modifiers = { { Kind = "Gain", Volume = 0.5 } } })
+results.class = halved.ClassName
+results.halvedPeak = halved.Peak
+results.halvedDuration = halved.Duration
+results.halvedChannels = halved.Channels
+results.halvedRate = halved.SampleRate
+results.rate = Sound.SampleRate
+results.memory = halved.Memory
+results.source = halved.Source
+
+local loud = Sound:Bake("tone.wav", { Normalize = -6 })
+results.normalPeak = loud.Peak
+
+local echoed = Sound:Bake("tone.wav", {
+    Modifiers = { { Kind = "Echo", Delay = 0.3, Feedback = 0, Mix = 0.5 } },
+    Tail = 1,
+})
+results.echoDuration = echoed.Duration
+
+local panned = Sound:Bake("tone.wav", { Modifiers = { { Kind = "Pan", Pan = -1 } } })
+results.pannedChannels = panned.Channels
+
+local cut = Sound:Bake("tone.wav", { Length = 0.25 })
+results.cutDuration = cut.Duration
+
+local mono = Sound:Bake("tone.wav", { Modifiers = { { Kind = "Pan", Pan = -1 } }, Channels = 1 })
+results.forcedChannels = mono.Channels
+
+local node = Sound:SoundNode(halved, { Looping = true })
+node.Input:Link(Sound:ToSpeaker().Output)
+node:Play()
+sleep(100)
+takeSpeaker()
+sleep(150)
+results.playedPeak = takeSpeaker().peak
+results.nodeLength = node.Length
+node:Destroy()
+
+local bytes = halved:GetBytes()
+results.bytesKind = typeof(bytes)
+results.header = buffer.readstring(bytes, 0, 4)
+local reloaded = Sound:FromString(bytes)
+results.reloadedLength = reloaded.Length
+reloaded:Destroy()
+
+local function fails(config)
+    local ok, problem = pcall(function()
+        return Sound:Bake("tone.wav", config)
+    end)
+    return if ok then "no error" else tostring(problem)
+end
+results.badKind = fails({ Modifiers = { { Kind = "Nope" } } })
+results.noKind = fails({ Modifiers = { { Volume = 1 } } })
+results.badField = fails({ Modifiers = { { Kind = "Gain", Loudness = 2 } } })
+results.badChannels = fails({ Channels = 3 })
+
+halved:Destroy()
+local ok = pcall(function()
+    return halved.Duration
+end)
+results.destroyedReads = ok
+"#,
+        ),
+    )
+    .await;
+    outcome.assert_clean();
+    let results: Table = outcome.global("results");
+    let text = |key: &str| results.get::<String>(key).unwrap();
+    assert_eq!(text("class"), "BakedSound");
+    let peak = number(&results, "halvedPeak");
+    assert!((peak - 0.25).abs() < 0.01, "a Gain of 0.5 should halve a 0.5 tone, got {peak}");
+    let duration = number(&results, "halvedDuration");
+    assert!((duration - 1.0).abs() < 0.01, "the bake should keep the length, got {duration}");
+    assert_eq!(number(&results, "halvedChannels"), 1.0, "a sound that is the same on both sides is kept as one");
+    assert_eq!(number(&results, "halvedRate"), number(&results, "rate"));
+    assert!(number(&results, "memory") > 90_000.0);
+    assert_eq!(text("source"), "tone.wav");
+    let normal = number(&results, "normalPeak");
+    assert!((normal - 0.501).abs() < 0.01, "Normalize = -6 should land on 0.5, got {normal}");
+    let echoed = number(&results, "echoDuration");
+    assert!(
+        (1.25..1.4).contains(&echoed),
+        "the echo tail should be kept and the silence after it trimmed, got {echoed}"
+    );
+    assert_eq!(number(&results, "pannedChannels"), 2.0);
+    let cut = number(&results, "cutDuration");
+    assert!((cut - 0.25).abs() < 0.01, "Length should cut the source, got {cut}");
+    assert_eq!(number(&results, "forcedChannels"), 1.0);
+    let played = number(&results, "playedPeak");
+    assert!((played - 0.25).abs() < 0.02, "a baked sound should play as it was baked, got {played}");
+    assert!((number(&results, "nodeLength") - 1.0).abs() < 0.01);
+    assert_eq!(text("bytesKind"), "buffer");
+    assert_eq!(text("header"), "RIFF");
+    assert!((number(&results, "reloadedLength") - 1.0).abs() < 0.01);
+    assert!(text("badKind").contains("'Nope' is not a sound modifier"), "{}", text("badKind"));
+    assert!(text("noKind").contains("needs a Kind"), "{}", text("noKind"));
+    assert!(text("badField").contains("Loudness is not a valid member of Gain"), "{}", text("badField"));
+    assert!(text("badChannels").contains("Channels must be 1 or 2"), "{}", text("badChannels"));
+    assert!(!flag(&results, "destroyedReads"));
+}
+
+#[tokio::test]
+async fn the_sound_api_reports_load_peaks_and_clipping() {
+    let (outcome, _) = run_sound(
+        vec![("assets/loud.wav", tone(375.0, 1.0, 1.0))],
+        &script(
+            r#"
+results = {}
+local node = Sound:SoundNode("loud.wav", { Looping = true })
+local boost = Sound:Modifier("Gain", { Volume = 3 })
+node.Input:Link(boost.Output)
+boost.Input:Link(Sound:ToSpeaker().Output)
+Sound:ResetStats()
+node:Play()
+sleep(300)
+local stats = Sound:GetStats()
+results.load = stats.Load
+results.busiest = stats.BusiestBlock
+results.peak = stats.Peak
+results.clipped = stats.ClippedBlocks
+results.nodes = stats.Nodes
+results.voices = stats.Voices
+results.loadField = Sound.Load
+results.peakField = Sound.Peak
+results.clippedField = Sound.ClippedBlocks
+node:Stop()
+sleep(100)
+Sound:ResetStats()
+local cleared = Sound:GetStats()
+results.clearedPeak = cleared.Peak
+results.clearedClipped = cleared.ClippedBlocks
+"#,
+        ),
+    )
+    .await;
+    outcome.assert_clean();
+    let results: Table = outcome.global("results");
+    let load = number(&results, "load");
+    assert!(load > 0.0 && load < 1.0, "the load should be a share of the budget, got {load}");
+    assert!(number(&results, "busiest") >= load * 0.5);
+    assert!(number(&results, "peak") > 2.5, "the peak should be read before the clipper, got {}", number(&results, "peak"));
+    assert!(number(&results, "clipped") > 10.0, "a tone at three times full scale should clip");
+    assert!(number(&results, "nodes") >= 3.0);
+    assert_eq!(number(&results, "voices"), 1.0);
+    assert!(number(&results, "loadField") > 0.0);
+    assert!(number(&results, "peakField") > 2.5);
+    assert!(number(&results, "clippedField") > 10.0);
+    assert!(number(&results, "clearedPeak") < 0.01, "ResetStats should clear the peak");
+    assert_eq!(number(&results, "clearedClipped"), 0.0);
+}
+
+#[tokio::test]
+async fn max_voices_steals_the_oldest_and_respects_priority() {
+    let (outcome, _) = run_sound(
+        tone_asset(),
+        &script(
+            r#"
+results = {}
+Sound.MaxVoices = 2
+local first = Sound:SoundNode("tone.wav", { Looping = true })
+local second = Sound:SoundNode("tone.wav", { Looping = true })
+local third = Sound:SoundNode("tone.wav", { Looping = true })
+local stopped = {}
+first.Stopped:BindHandler("log", function()
+    table.insert(stopped, "first")
+end)
+results.firstPlayed = first:Play()
+sleep(10)
+results.secondPlayed = second:Play()
+sleep(10)
+results.thirdPlayed = third:Play()
+results.voices = Sound.Voices
+results.firstPlaying = first.IsPlaying
+results.thirdPlaying = third.IsPlaying
+results.stoppedFirst = stopped[1] == "first"
+results.restarted = third:Play()
+results.voicesAfterRestart = Sound.Voices
+
+local boss = Sound:SoundNode("tone.wav", { Looping = true, Priority = 5 })
+local guard = Sound:SoundNode("tone.wav", { Looping = true, Priority = 5 })
+second:Stop()
+third:Stop()
+boss:Play()
+guard:Play()
+local footstep = Sound:SoundNode("tone.wav", { Looping = true, Priority = 1 })
+results.footstepPlayed = footstep:Play()
+results.bossPlaying = boss.IsPlaying
+results.priority = footstep.Priority
+
+local stats = Sound:GetStats()
+results.stolen = stats.StolenVoices
+results.refused = stats.RefusedVoices
+results.maxVoices = stats.MaxVoices
+
+Sound.MaxVoices = 0
+results.unlimited = footstep:Play()
+results.allVoices = Sound.Voices
+local ok = pcall(function()
+    Sound.MaxVoices = -1
+end)
+results.negative = ok
+Sound:StopAll()
+"#,
+        ),
+    )
+    .await;
+    outcome.assert_clean();
+    let results: Table = outcome.global("results");
+    assert!(flag(&results, "firstPlayed"));
+    assert!(flag(&results, "secondPlayed"));
+    assert!(flag(&results, "thirdPlayed"), "a new sound should take the place of the oldest");
+    assert_eq!(number(&results, "voices"), 2.0);
+    assert!(!flag(&results, "firstPlaying"), "the oldest should be stopped");
+    assert!(flag(&results, "thirdPlaying"));
+    assert!(flag(&results, "stoppedFirst"), "the stolen sound should fire Stopped");
+    assert!(flag(&results, "restarted"), "playing a sound that already plays needs no new voice");
+    assert_eq!(number(&results, "voicesAfterRestart"), 2.0);
+    assert!(!flag(&results, "footstepPlayed"), "a low priority sound should not steal from higher ones");
+    assert!(flag(&results, "bossPlaying"));
+    assert_eq!(number(&results, "priority"), 1.0);
+    assert_eq!(number(&results, "stolen"), 1.0);
+    assert_eq!(number(&results, "refused"), 1.0);
+    assert_eq!(number(&results, "maxVoices"), 2.0);
+    assert!(flag(&results, "unlimited"));
+    assert_eq!(number(&results, "allVoices"), 3.0);
+    assert!(!flag(&results, "negative"));
+}
+
+#[tokio::test]
+async fn preloading_decodes_sounds_ahead_of_time() {
+    let (outcome, _) = run_sound(
+        vec![
+            ("assets/tone.wav", tone(375.0, 1.0, 0.5)),
+            ("assets/short.wav", tone(375.0, 0.5, 0.5)),
+        ],
+        &script(
+            r#"
+results = {}
+results.before = residentSounds()
+results.seconds = Sound:Preload("tone.wav", "short.wav")
+sleep(50)
+results.after = residentSounds()
+results.unloadedOne = Sound:Unload("short.wav")
+results.unloadedRest = Sound:Unload()
+results.unloadedNone = Sound:Unload()
+local ok, problem = pcall(function()
+    return Sound:Preload(5)
+end)
+results.badSource = if ok then "no error" else tostring(problem)
+"#,
+        ),
+    )
+    .await;
+    outcome.assert_clean();
+    let results: Table = outcome.global("results");
+    assert!((number(&results, "seconds") - 1.5).abs() < 0.01);
+    assert!(
+        number(&results, "after") >= number(&results, "before") + 2.0,
+        "both sounds should stay decoded, got {} then {}",
+        number(&results, "before"),
+        number(&results, "after")
+    );
+    assert_eq!(number(&results, "unloadedOne"), 1.0);
+    assert_eq!(number(&results, "unloadedRest"), 1.0);
+    assert_eq!(number(&results, "unloadedNone"), 0.0);
+    let problem = results.get::<String>("badSource").unwrap();
+    assert!(problem.contains("Preload expects an Asset, a BakedSound or an asset path"), "{problem}");
+}

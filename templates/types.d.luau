@@ -1080,6 +1080,7 @@ export type SoundNode = NodeObject & {
 	Looping: boolean,
 	LoopStart: number,
 	LoopEnd: number,
+	Priority: number,
 	PlayPosition: number,
 	Length: number,
 	IsPlaying: boolean,
@@ -1093,7 +1094,7 @@ export type SoundNode = NodeObject & {
 	Resumed: Signal<()>,
 	Ended: Signal<()>,
 	Looped: Signal<number>,
-	Play: (self: SoundNode) -> (),
+	Play: (self: SoundNode) -> boolean,
 	Stop: (self: SoundNode) -> (),
 	Pause: (self: SoundNode) -> (),
 	Resume: (self: SoundNode) -> (),
@@ -1317,6 +1318,68 @@ export type MeterModifier = SoundModifier & {
 	Loudness: number,
 }
 
+export type AllPassModifier = SoundModifier & {
+	Frequency: number,
+	Q: number,
+}
+
+export type DcBlockModifier = SoundModifier & {
+	Frequency: number,
+}
+
+export type SoftClipModifier = SoundModifier & {
+	Ceiling: number,
+	Knee: number,
+}
+
+export type AutoGainModifier = SoundModifier & {
+	Target: number,
+	Speed: number,
+	MaxGain: number,
+	CurrentGain: number,
+}
+
+export type ExpanderModifier = SoundModifier & {
+	Threshold: number,
+	Ratio: number,
+	Attack: number,
+	Release: number,
+}
+
+export type ExciterModifier = SoundModifier & {
+	Frequency: number,
+	Amount: number,
+}
+
+export type AutoWahModifier = SoundModifier & {
+	Sensitivity: number,
+	Frequency: number,
+	Range: number,
+	Resonance: number,
+	Mix: number,
+}
+
+export type HaasModifier = SoundModifier & {
+	Delay: number,
+}
+
+export type AutoPanModifier = SoundModifier & {
+	Rate: number,
+	Depth: number,
+}
+
+export type TransientModifier = SoundModifier & {
+	Attack: number,
+	Sustain: number,
+}
+
+export type SpectrumModifier = SoundModifier & {
+	Bands: number,
+	Smoothing: number,
+	GetLevels: (self: SpectrumModifier) -> { number },
+	GetFrequencies: (self: SpectrumModifier) -> { number },
+}
+
 export type SoundModifiers = {
 	Gain: GainModifier,
 	Pan: PanModifier,
@@ -1344,6 +1407,17 @@ export type SoundModifiers = {
 	RingModulator: RingModulatorModifier,
 	StereoWidth: StereoWidthModifier,
 	Meter: MeterModifier,
+	AllPass: AllPassModifier,
+	DcBlock: DcBlockModifier,
+	SoftClip: SoftClipModifier,
+	AutoGain: AutoGainModifier,
+	Expander: ExpanderModifier,
+	Exciter: ExciterModifier,
+	AutoWah: AutoWahModifier,
+	Haas: HaasModifier,
+	AutoPan: AutoPanModifier,
+	Transient: TransientModifier,
+	Spectrum: SpectrumModifier,
 }
 
 export type SoundListener = {
@@ -1359,7 +1433,52 @@ export type SoundNodeConfig = {
 	Looping: boolean?,
 	LoopStart: number?,
 	LoopEnd: number?,
+	Priority: number?,
 	PlayPosition: number?,
+}
+
+export type BakedSound = BaseGameObject & {
+	Source: string?,
+	Duration: number,
+	SampleRate: number,
+	Channels: number,
+	Frames: number,
+	Peak: number,
+	Memory: number,
+	GetBytes: (self: BakedSound) -> buffer,
+}
+
+export type BakeModifier = {
+	Kind: keyof<SoundModifiers>,
+	[string]: any,
+}
+
+export type BakeConfig = {
+	Modifiers: { BakeModifier }?,
+	Tail: number?,
+	Normalize: number?,
+	Volume: number?,
+	Speed: number?,
+	Start: number?,
+	Length: number?,
+	Channels: number?,
+	SampleRate: number?,
+}
+
+export type SoundStats = {
+	Load: number,
+	BusiestBlock: number,
+	Peak: number,
+	ClippedBlocks: number,
+	LateBlocks: number,
+	SkippedBlocks: number,
+	Nodes: number,
+	RestingNodes: number,
+	Voices: number,
+	MaxVoices: number,
+	StolenVoices: number,
+	RefusedVoices: number,
+	SampleRate: number,
 }
 
 export type FromBytesConfig = {
@@ -1411,8 +1530,18 @@ export type Sound_API = {
 	IsConnected: boolean,
 	LateBlocks: number,
 	SkippedBlocks: number,
+	ClippedBlocks: number,
+	Load: number,
+	Peak: number,
+	Voices: number,
+	MaxVoices: number,
 	ActivationChanged: Signal<boolean>,
-	SoundNode: (self: Sound_API, asset: Asset | string, config: SoundNodeConfig?) -> SoundNode,
+	SoundNode: (self: Sound_API, asset: Asset | BakedSound | string, config: SoundNodeConfig?) -> SoundNode,
+	Bake: (self: Sound_API, asset: Asset | BakedSound | string, config: BakeConfig?) -> BakedSound,
+	Preload: (self: Sound_API, ...Asset | string) -> number,
+	Unload: (self: Sound_API, ...string) -> number,
+	GetStats: (self: Sound_API) -> SoundStats,
+	ResetStats: (self: Sound_API) -> (),
 	FromString: (self: Sound_API, data: string | buffer, config: SoundNodeConfig?) -> FromString,
 	FromBytes: (self: Sound_API, config: FromBytesConfig?) -> FromBytes,
 	ToSpeaker: (self: Sound_API, config: ToSpeakerConfig?) -> ToSpeaker,

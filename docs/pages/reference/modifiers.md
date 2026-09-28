@@ -362,3 +362,178 @@ window.PreFrame:BindHandler("clip", function()
 	end
 end)
 ```
+
+## AllPass
+
+Inherits: [SoundModifier](soundmodifier.md) < [NodeObject](nodeobject.md) < [BaseGameObject](basegameobject.md)
+
+Changes the timing of each frequency and leaves its volume alone. On its own it sounds the same. Mixed with the original, or chained a few times, it gives phase effects.
+
+| Name | Default | Range | Unit | Description |
+| --- | --- | --- | --- | --- |
+| `Frequency` | `1000` | 10 to 24000 | Hz | The frequency it shifts the most. |
+| `Q` | `0.707` | 0.1 to 40 | none | How narrow the shift is. |
+
+## DcBlock
+
+Inherits: [SoundModifier](soundmodifier.md) < [NodeObject](nodeobject.md) < [BaseGameObject](basegameobject.md)
+
+Removes a steady offset, the part of a sound that sits above or below zero and never moves. You cannot hear it, but it uses up room before full volume, so the next loud part clips sooner and crackles.
+
+| Name | Default | Range | Unit | Description |
+| --- | --- | --- | --- | --- |
+| `Frequency` | `20` | 1 to 200 | Hz | Everything below this is removed. |
+
+Put it first in a chain fed by sound you did not make, like a microphone or a [FromBytes](frombytes.md) stream.
+
+## SoftClip
+
+Inherits: [SoundModifier](soundmodifier.md) < [NodeObject](nodeobject.md) < [BaseGameObject](basegameobject.md)
+
+Rounds off loud peaks so they never pass the ceiling. A hard cut at full volume is what makes a loud mix crackle. SoftClip bends the peak down smoothly instead.
+
+| Name | Default | Range | Unit | Description |
+| --- | --- | --- | --- | --- |
+| `Ceiling` | `-1` | -24 to 0 | dB | The highest level that comes out. |
+| `Knee` | `0.5` | 0 to 1 | none | How far below the ceiling the rounding starts. `0` cuts hard at the ceiling. `1` starts rounding from silence. |
+
+It has no memory and no delay, so it costs almost nothing. A [Limiter](#limiter) turns the whole sound down for a moment instead, which stays cleaner through long loud parts. Use SoftClip for short peaks and a Limiter for loud stretches.
+
+## AutoGain
+
+Inherits: [SoundModifier](soundmodifier.md) < [NodeObject](nodeobject.md) < [BaseGameObject](basegameobject.md)
+
+Turns the sound up or down by itself so it stays near one level. Good for voice chat, and for any sound that arrives at a volume you do not control.
+
+| Name | Default | Range | Unit | Description |
+| --- | --- | --- | --- | --- |
+| `Target` | `-18` | -60 to 0 | dB | The average level it aims for. |
+| `Speed` | `1` | 0.01 to 10 | seconds | How long it takes to catch up. Short reacts quickly and can pump. Long is smooth. |
+| `MaxGain` | `18` | 0 to 48 | dB | The most it turns the sound up or down. |
+
+It has one value that you read:
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `CurrentGain` | `number` | The gain it uses right now, in dB. Read only. |
+
+Below about -70 dB it holds its gain instead of lifting silence into hiss.
+
+## Expander
+
+Inherits: [SoundModifier](soundmodifier.md) < [NodeObject](nodeobject.md) < [BaseGameObject](basegameobject.md)
+
+The opposite of a [Compressor](#compressor). It makes quiet parts quieter, so hum and room noise drop away while the sound itself stays.
+
+| Name | Default | Range | Unit | Description |
+| --- | --- | --- | --- | --- |
+| `Threshold` | `-40` | -100 to 0 | dB | Sound below this level is turned down. |
+| `Ratio` | `2` | 1 to 20 | none | How much. At `2`, a level 1 dB under `Threshold` comes out 2 dB under. |
+| `Attack` | `0.005` | 0 to 1 | seconds | How fast it opens when the sound comes back. |
+| `Release` | `0.1` | 0 to 5 | seconds | How fast it turns down when the sound drops. |
+
+A [NoiseGate](#noisegate) shuts all the way. An Expander only leans, so it sounds more natural.
+
+## Exciter
+
+Inherits: [SoundModifier](soundmodifier.md) < [NodeObject](nodeobject.md) < [BaseGameObject](basegameobject.md)
+
+Adds brightness by making new high notes out of the ones already there. It lifts a sound that seems dull or muffled without raising the hiss the way turning up the treble does.
+
+| Name | Default | Range | Unit | Description |
+| --- | --- | --- | --- | --- |
+| `Frequency` | `3000` | 500 to 16000 | Hz | Only sound above this is excited. |
+| `Amount` | `0.3` | 0 to 1 | none | How much is added. |
+
+## AutoWah
+
+Inherits: [SoundModifier](soundmodifier.md) < [NodeObject](nodeobject.md) < [BaseGameObject](basegameobject.md)
+
+A filter that opens as the sound gets louder and closes as it gets quieter. Put a guitar or a voice through it and it says "wah".
+
+| Name | Default | Range | Unit | Description |
+| --- | --- | --- | --- | --- |
+| `Sensitivity` | `0.5` | 0 to 1 | none | How easily loud sound opens the filter. |
+| `Frequency` | `250` | 20 to 5000 | Hz | Where the filter sits while it is closed. |
+| `Range` | `3` | 0 to 8 | octaves | How far up it opens. |
+| `Resonance` | `4` | 0.1 to 20 | none | How sharp the peak of the filter is. |
+| `Mix` | `1` | 0 to 1 | none | See [Mix](soundmodifier.md#mix). |
+
+## Haas
+
+Inherits: [SoundModifier](soundmodifier.md) < [NodeObject](nodeobject.md) < [BaseGameObject](basegameobject.md)
+
+Makes a sound wider by playing one side a few milliseconds late. You still hear the sound from the early side, but the gap between them sounds wide.
+
+| Name | Default | Range | Unit | Description |
+| --- | --- | --- | --- | --- |
+| `Delay` | `0.012` | -0.05 to 0.05 | seconds | How late one side is. Above 0 the right side is late. Below 0 the left side is late. Changes glide over 20 ms. |
+
+Keep it between about 0.005 and 0.03. Longer than that and it becomes an echo. A Haas sound can thin out when both sides are added together, so check it with `Channels = 1` on a [ToSpeaker](tospeaker.md).
+
+## AutoPan
+
+Inherits: [SoundModifier](soundmodifier.md) < [NodeObject](nodeobject.md) < [BaseGameObject](basegameobject.md)
+
+Moves the sound from side to side by itself.
+
+| Name | Default | Range | Unit | Description |
+| --- | --- | --- | --- | --- |
+| `Rate` | `0.5` | 0 to 20 | Hz | How many times a second it goes over and back. |
+| `Depth` | `1` | 0 to 1 | none | How far it moves. `1` goes all the way to each side. |
+
+## Transient
+
+Inherits: [SoundModifier](soundmodifier.md) < [NodeObject](nodeobject.md) < [BaseGameObject](basegameobject.md)
+
+Changes the start of each hit and the ring after it, each on its own. It makes drums punchier or softens a harsh click, with no compressor.
+
+| Name | Default | Range | Unit | Description |
+| --- | --- | --- | --- | --- |
+| `Attack` | `0` | -1 to 1 | none | Above 0 the start of each hit gets louder. Below 0 it gets softer. |
+| `Sustain` | `0` | -1 to 1 | none | Above 0 the ring after each hit gets louder. Below 0 it dies away sooner. |
+
+With both at `0` it does no work at all. It follows the shape of the sound, not its volume, so loud and quiet hits change the same way.
+
+## Spectrum
+
+Inherits: [SoundModifier](soundmodifier.md) < [NodeObject](nodeobject.md) < [BaseGameObject](basegameobject.md)
+
+Measures how loud each part of the range is and passes the sound through unchanged. Use it to drive a visualizer, or a light that pulses with the music.
+
+| Name | Default | Range | Unit | Description |
+| --- | --- | --- | --- | --- |
+| `Bands` | `8` | 1 to 32 | none | How many parts to split the range into. |
+| `Smoothing` | `0.6` | 0 to 0.99 | none | How slowly the levels move. `0` jumps with every block. Higher is calmer. |
+
+The bands run from 40 Hz to 16 kHz, spaced the way the ear hears pitch, so each band covers the same number of notes.
+
+### GetLevels
+
+```luau
+spectrum:GetLevels(): { number }
+```
+
+The level of each band, from low to high. `1` is about full volume.
+
+### GetFrequencies
+
+```luau
+spectrum:GetFrequencies(): { number }
+```
+
+The middle of each band in Hz, from low to high, in the same order as GetLevels.
+
+```luau
+local Process = import("Process")
+
+local spectrum = Sound:Modifier("Spectrum", { Bands = 16 })
+music.Input:Link(spectrum.Output)
+spectrum.Input:Link(speaker.Output)
+
+Process.Heartbeat:BindHandler("bars", function()
+	for index, level in spectrum:GetLevels() do
+		bars[index].Size = udim.new(12, level * 300)
+	end
+end)
+```

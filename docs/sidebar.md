@@ -96,6 +96,7 @@
   - [NodeObject](pages/reference/nodeobject.md)
   - [NodeInput and NodeOutput](pages/reference/nodeports.md)
   - [SoundNode](pages/reference/soundnode.md)
+  - [BakedSound](pages/reference/bakedsound.md)
   - [FromBytes](pages/reference/frombytes.md)
   - [ToSpeaker](pages/reference/tospeaker.md)
   - [ToBytes](pages/reference/tobytes.md)
