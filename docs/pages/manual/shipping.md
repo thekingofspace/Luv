@@ -86,7 +86,9 @@ This helps when you test a packed game, or when your game is a command line tool
 
 ## The error message box
 
-A packed game on Windows shows a message box when it stops because of an error and has no console window. The title is the program name. The text lists the first five error messages, then the reason the game stopped.
+A packed game on Windows shows a message box when it stops because of an error and has no console window. The title is the program name. The text lists the five errors that happened most often, each with how many times it happened, then the reason the game stopped.
+
+Errors in a game with no console are not shown while it runs, so a mistake that repeats every frame can add up to thousands before the game closes. The count in front of each message shows which one it was.
 
 With `--console` there is no message box. The errors print in the console instead. On Linux the errors print to the terminal. See [Errors in the game](../start/command-line.md#errors-in-the-game).
 

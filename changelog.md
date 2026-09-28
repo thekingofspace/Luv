@@ -18,6 +18,10 @@
 - `AutoGain` holds a sound near one level and reports `CurrentGain`.
 - `Spectrum` measures the sound in up to 32 bands, with `GetLevels` and `GetFrequencies` for visualizers.
 
+## Shipping
+
+- The error box of a packed game groups errors that repeat and lists the most common first, with how many times each happened. Before, it listed the first five, so an error that repeated every frame could hide behind earlier ones.
+
 ## Coroutines
 
 - A new `task` global with `task.wait`, `task.spawn`, `task.defer` and `task.delay`.

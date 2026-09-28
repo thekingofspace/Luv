@@ -18,10 +18,19 @@ const SUBSYSTEM_OFFSET: usize = 4 + 20 + 68;
 const SUBSYSTEM_GUI: u16 = 2;
 const SUBSYSTEM_CONSOLE: u16 = 3;
 const REMEMBERED: usize = 5;
+const DISTINCT: usize = 64;
 const ICON_SIDE: u32 = 256;
 const ICO_MAGIC: [u8; 4] = [0, 0, 1, 0];
 
-static REPORTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+struct Reports {
+    seen: Vec<(String, usize)>,
+    others: usize,
+}
+
+static REPORTS: Mutex<Reports> = Mutex::new(Reports {
+    seen: Vec::new(),
+    others: 0,
+});
 
 pub struct PackageReport {
     pub executable: PathBuf,
@@ -203,13 +212,32 @@ pub fn package(
 
 pub fn remember(message: &str) {
     let mut reports = REPORTS.lock().unwrap_or_else(PoisonError::into_inner);
-    if reports.len() < REMEMBERED {
-        reports.push(message.to_owned());
+    if let Some((_, count)) = reports.seen.iter_mut().find(|(seen, _)| seen == message) {
+        *count += 1;
+    } else if reports.seen.len() < DISTINCT {
+        reports.seen.push((message.to_owned(), 1));
+    } else {
+        reports.others += 1;
     }
 }
 
 pub fn remembered() -> Vec<String> {
-    REPORTS.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    let reports = REPORTS.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut ranked: Vec<&(String, usize)> = reports.seen.iter().collect();
+    ranked.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+    let mut lines: Vec<String> = ranked
+        .iter()
+        .take(REMEMBERED)
+        .map(|(message, count)| match count {
+            1 => message.clone(),
+            count => format!("{count} times: {message}"),
+        })
+        .collect();
+    let rest = ranked.iter().skip(REMEMBERED).map(|(_, count)| count).sum::<usize>() + reports.others;
+    if rest > 0 {
+        lines.push(format!("and {rest} other errors"));
+    }
+    lines
 }
 
 #[cfg(windows)]
