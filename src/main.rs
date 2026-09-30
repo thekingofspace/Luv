@@ -10,6 +10,7 @@ use luv::builder;
 use luv::luaurc;
 use luv::packager::{self, IconReport};
 use luv::plugins::{self, Built};
+use luv::progress::Progress;
 use luv::project::{self, GameInfo, Project};
 use luv::runtime::aliases;
 use luv::runtime::{Engine, EngineBuilder, Runtime, THREAD_STACK_SIZE};
@@ -265,6 +266,13 @@ async fn test(path: &Path, args: Vec<String>, windows: Option<Arc<dyn WindowSyst
             eprintln!("Built native library {}", library.file);
         }
     }
+    let workspace = project.clone();
+    for library in tokio::task::spawn_blocking(move || plugins::build_embedded(&workspace)).await?? {
+        if library.rebuilt {
+            eprintln!("Built embedded native library {}", library.file);
+        }
+    }
+    plugins::export(&project, &project.output_dir())?;
     for container in builder::build_containers(&project, &libraries).await? {
         if container.rebuilt {
             eprintln!("Built container {} v{}", container.name, container.version);
@@ -273,10 +281,11 @@ async fn test(path: &Path, args: Vec<String>, windows: Option<Arc<dyn WindowSyst
     report_aliases(&luaurc::sync(&project)?, true);
     report_types(&typegen::sync(&project)?, true);
     let game = Engine::builder(Arc::new(vfs))
+        .boot(builder::boot_scripts(&project)?)
         .args(args)
         .game(project.manifest.game.name.clone(), project.root.clone())
         .icon(project.manifest.game.icon.as_deref())
-        .library_dirs([project.output_dir()])
+        .library_dirs([project.output_dir(), plugins::embedded_output(&project)])
         .container_dirs([project.output_dir()]);
     execute(game, &entry, windows, false).await
 }
@@ -286,9 +295,10 @@ async fn build(path: &Path) -> Result<()> {
     let game = &project.manifest.game;
     let aliases = luaurc::sync(&project)?;
     let types = typegen::sync(&project)?;
-    let report = builder::build(&project).await?;
+    let progress = Progress::console();
+    let report = builder::build_with(&project, &progress).await?;
     let libraries = natives(&project).await?;
-    let containers = builder::build_containers(&project, &libraries).await?;
+    let containers = builder::build_containers_with(&project, &libraries, &progress).await?;
     println!(
         "Built {} v{} ({}, {})",
         game.name,
@@ -304,6 +314,9 @@ async fn build(path: &Path) -> Result<()> {
     );
     for library in &libraries {
         println!("  + {} (native library)", library.file);
+    }
+    for file in plugins::export(&project, &project.output_dir())? {
+        println!("  + {file} (export)");
     }
     for container in &containers {
         println!(
@@ -328,9 +341,10 @@ fn container_file(path: &Path) -> String {
 async fn package(path: &Path, console: bool) -> Result<()> {
     let project = Project::discover(path)?;
     let aliases = luaurc::sync(&project)?;
-    let report = builder::build(&project).await?;
+    let progress = Progress::console();
+    let report = builder::build_with(&project, &progress).await?;
     let libraries = natives(&project).await?;
-    let containers: Vec<PathBuf> = builder::build_containers(&project, &libraries)
+    let containers: Vec<PathBuf> = builder::build_containers_with(&project, &libraries, &progress)
         .await?
         .into_iter()
         .map(|container| container.path)
@@ -357,6 +371,9 @@ async fn package(path: &Path, console: bool) -> Result<()> {
     for library in &packaged.libraries {
         println!("  + {library}");
     }
+    for file in plugins::export(&project, &packaged.executable.parent().map(Path::to_path_buf).unwrap_or_default())? {
+        println!("  + {file} (export)");
+    }
     for container in &packaged.containers {
         println!("  + {container}");
     }
@@ -381,6 +398,7 @@ async fn run(path: &Path, args: Vec<String>, windows: Option<Arc<dyn WindowSyste
     let info = GameInfo::from_manifest(pak.manifest())?;
     let directory = package.parent().map(Path::to_path_buf).unwrap_or_default();
     let game = Engine::builder(Arc::new(pak))
+        .boot(info.boot_scripts())
         .args(args)
         .game(info.name.clone(), directory.clone())
         .icon(info.icon.as_deref())

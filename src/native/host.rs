@@ -1,10 +1,11 @@
 use std::ffi::{CStr, c_char, c_void};
 use std::ptr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use mlua::{Function, Lua, MultiValue, ObjectLike, Result, Value};
+use mlua::{Function, Lua, MultiValue, ObjectLike, Result, Table, Value};
+use tokio::sync::mpsc;
 
 use super::classes::{
     Arg, Call, Event, KIND_BOOLEAN, KIND_BUFFER, KIND_COLOR, KIND_NIL, KIND_NONE, KIND_NUMBER, KIND_OBJECT,
@@ -15,7 +16,7 @@ use super::library::LibraryShared;
 use super::memory::Pointer;
 use crate::datatypes::{Color, UDim};
 use crate::objects::Signal;
-use crate::runtime::{Scheduler, imports};
+use crate::runtime::{CloseCallbacks, Scheduler, imports};
 
 const OK: i32 = 0;
 const UNKNOWN_NAME: i32 = -1;
@@ -54,8 +55,149 @@ impl RawValue {
     }
 }
 
+struct Unbind {
+    signal: u64,
+    id: String,
+    events: mpsc::UnboundedSender<Event>,
+}
+
 pub struct Task {
     cancelled: Arc<AtomicBool>,
+    unbind: Option<Unbind>,
+}
+
+static HOOKS: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy)]
+enum Hook {
+    Heartbeat,
+    Frame,
+    Close,
+    Error,
+}
+
+fn exception_values(args: MultiValue) -> Result<MultiValue> {
+    let Some(Value::Table(exception)) = args.into_iter().next() else {
+        return Ok(MultiValue::new());
+    };
+    let exception: Table = exception;
+    let mut values = MultiValue::new();
+    for key in ["Message", "Traceback", "Source", "Line", "Thread"] {
+        values.push_back(exception.get::<Value>(key)?);
+    }
+    Ok(values)
+}
+
+unsafe fn hook(
+    call: *mut Call,
+    kind: Hook,
+    window: *mut RefHandle,
+    name: *const c_char,
+    function: Option<RawFunction>,
+    data: *mut c_void,
+    flags: u32,
+) -> *mut Task {
+    let Ok((call, lua)) = (unsafe { standing(call) }) else {
+        return ptr::null_mut();
+    };
+    let Some(function) = function else {
+        return refuse(call, runtime("a hook needs a function"), ptr::null_mut());
+    };
+    let label: Arc<str> = unsafe { text(name) }
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "a native hook".to_owned())
+        .into();
+    let made = (|| -> Result<Task> {
+        let native = native_function(&lua, Entry::new(call, label.clone(), function, data, flags))?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let flag = cancelled.clone();
+        let wrapper = lua.create_async_function(move |_, args: MultiValue| {
+            let native = native.clone();
+            let flag = flag.clone();
+            async move {
+                if flag.load(Ordering::Acquire) {
+                    return Ok(MultiValue::new());
+                }
+                let args = match kind {
+                    Hook::Error => exception_values(args)?,
+                    _ => args,
+                };
+                native.call_async::<MultiValue>(args).await
+            }
+        })?;
+        let signal = match kind {
+            Hook::Close => {
+                lua.app_data_ref::<CloseCallbacks>()
+                    .ok_or_else(|| runtime("the game cannot take close callbacks here"))?
+                    .push(wrapper);
+                return Ok(Task { cancelled, unbind: None });
+            }
+            Hook::Heartbeat => field(&imports::get(&lua, "Process")?, "Heartbeat")?,
+            Hook::Error => field(&imports::get(&lua, "Exception")?, "Raised")?,
+            Hook::Frame => {
+                let window = target_of(window, &lua).ok_or_else(|| runtime("on_frame needs a window"))?;
+                field(&window, "OnFrame")?
+            }
+        };
+        let id = format!("luv.native.{label}.{}", HOOKS.fetch_add(1, Ordering::Relaxed));
+        let Value::Function(bind) = field(&signal, "BindHandler")? else {
+            return Err(runtime("a hook needs a Signal"));
+        };
+        bind.call::<()>((signal.clone(), id.as_str(), wrapper))?;
+        Ok(Task {
+            cancelled,
+            unbind: Some(Unbind {
+                signal: register_value(&lua, signal)?,
+                id,
+                events: events(&lua)?,
+            }),
+        })
+    })();
+    match made {
+        Ok(task) => Box::into_raw(Box::new(task)),
+        Err(error) => refuse(call, error, ptr::null_mut()),
+    }
+}
+
+pub unsafe extern "C" fn on_heartbeat(
+    call: *mut Call,
+    name: *const c_char,
+    function: Option<RawFunction>,
+    data: *mut c_void,
+    flags: u32,
+) -> *mut Task {
+    unsafe { hook(call, Hook::Heartbeat, ptr::null_mut(), name, function, data, flags) }
+}
+
+pub unsafe extern "C" fn on_frame(
+    call: *mut Call,
+    window: *mut RefHandle,
+    name: *const c_char,
+    function: Option<RawFunction>,
+    data: *mut c_void,
+    flags: u32,
+) -> *mut Task {
+    unsafe { hook(call, Hook::Frame, window, name, function, data, flags) }
+}
+
+pub unsafe extern "C" fn on_close(
+    call: *mut Call,
+    name: *const c_char,
+    function: Option<RawFunction>,
+    data: *mut c_void,
+    flags: u32,
+) -> *mut Task {
+    unsafe { hook(call, Hook::Close, ptr::null_mut(), name, function, data, flags) }
+}
+
+pub unsafe extern "C" fn on_error(
+    call: *mut Call,
+    name: *const c_char,
+    function: Option<RawFunction>,
+    data: *mut c_void,
+    flags: u32,
+) -> *mut Task {
+    unsafe { hook(call, Hook::Error, ptr::null_mut(), name, function, data, flags) }
 }
 
 unsafe fn text(pointer: *const c_char) -> Option<String> {
@@ -771,7 +913,7 @@ pub unsafe extern "C" fn schedule(
         Duration::from_secs_f64(seconds).max(MIN_PERIOD),
         cancelled.clone(),
     );
-    Box::into_raw(Box::new(Task { cancelled }))
+    Box::into_raw(Box::new(Task { cancelled, unbind: None }))
 }
 
 pub unsafe extern "C" fn cancel(task: *mut Task) {
@@ -780,5 +922,11 @@ pub unsafe extern "C" fn cancel(task: *mut Task) {
     }
     let task = unsafe { Box::from_raw(task) };
     task.cancelled.store(true, Ordering::Release);
+    if let Some(unbind) = task.unbind {
+        let _ = unbind
+            .events
+            .send(Event::Method(unbind.signal, "UnBind".to_owned(), vec![Out::Text(unbind.id.into_bytes())]));
+        let _ = unbind.events.send(Event::Release(unbind.signal));
+    }
 }
 

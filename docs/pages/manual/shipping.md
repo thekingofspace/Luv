@@ -47,18 +47,31 @@ Ship the whole folder. The game finds its plugins and containers next to the pro
 | Scripts | Inside the program, as bytecode. |
 | Assets and other packed files | Inside the program. |
 | Native plugins from `native/` | Next to the program. |
+| Native plugins from `nativeInter/` | Inside the program. See [Plugins inside the game](native-plugins.md#plugins-inside-the-game). |
+| Files in `export/` | Next to the program, in the same folders they had. |
 | Containers | Next to the program, one `.cont` file each. |
 | `build.toml`, `types.d.luau` and the other files that luv leaves out | Not shipped. |
 
 The full list of files that luv leaves out is in [What gets packed](../start/project-layout.md#what-gets-packed).
 
-Native libraries are never packed into the program. A `.dll` or `.so` file outside `native/` does not ship at all. luv warns you about it:
+Native libraries are only packed into the program when they are built from `nativeInter/`. A `.dll` or `.so` file outside `native/`, `nativeInter/` and `export/` does not ship at all. luv warns you about it:
 
 ```text
 warning: assets/stray.dll is a native library, so it is not packed into the game, move it into native/ to ship it next to the game
 ```
 
 Packed files are read only. The game can read them with [Asset](../reference/asset.md) and [FS](../reference/fs.md). It cannot change them. Write player data to the [save folder](#the-save-folder) instead.
+
+### Files next to the game
+
+Some files must sit next to the game where players can see them, like a readme, licenses or a folder of settings a player can edit. Put them in a folder named `export`. luv copies everything in it next to the program, keeping the folders inside. `luv build` and `luv package` list each file:
+
+```text
+  + readme.txt (export)
+  + licenses/font.txt (export)
+```
+
+The game can read them from the folder of the program with [FS](../reference/fs.md), not with [Asset](../reference/asset.md), because they are not packed.
 
 ## The game icon
 

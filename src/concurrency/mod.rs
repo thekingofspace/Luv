@@ -1,3 +1,4 @@
+pub(crate) mod parallel;
 mod promise;
 mod switch;
 mod task;
@@ -17,6 +18,7 @@ pub(crate) fn joined(head: Value, rest: MultiValue) -> MultiValue {
 }
 
 pub fn install(lua: &Lua) -> Result<()> {
+    parallel::install(lua)?;
     promise::install(lua)?;
     switch::install(lua)?;
     task::install(lua)

@@ -53,6 +53,7 @@ luv copies the values when you call Fire. Later changes to a table do not change
 | [UDim](udim.md) and [Color](color.md) | A copy. |
 | Enum items | The same item. |
 | Anything from `import`, including Messenger | The receiving thread's own copy. |
+| The table a module returned from `require` | The same module in the receiving thread, which requires it there if it has not yet. |
 | Functions and coroutines | Cannot be sent. |
 | Engine objects, like a [Signal](signal.md) or a [Window](window.md) | Cannot be sent. |
 | Tables that hold a value that cannot be sent | Cannot be sent. |

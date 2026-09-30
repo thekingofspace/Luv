@@ -708,6 +708,52 @@ static void export_stop_ticks(LuvCall* call) {
     api->push_number(call, tick_count);
 }
 
+static LuvTask* beat_task = NULL;
+static int beat_count = 0;
+static char last_error_text[512];
+
+static void on_beat(LuvCall* call) {
+    (void)call;
+    beat_count++;
+}
+
+static void export_hook_heartbeat(LuvCall* call) {
+    beat_count = 0;
+    beat_task = api->on_heartbeat(call, "fixture beats", on_beat, NULL, LUV_INLINE);
+    api->push_boolean(call, beat_task != NULL);
+}
+
+static void export_unhook_heartbeat(LuvCall* call) {
+    if (beat_task) {
+        api->cancel(beat_task);
+        beat_task = NULL;
+    }
+    api->push_number(call, beat_count);
+}
+
+static void on_error_seen(LuvCall* call) {
+    uint64_t length = 0;
+    const char* message = api->opt_string(call, 0, "", &length);
+    snprintf(last_error_text, sizeof(last_error_text), "%s", message);
+}
+
+static void export_hook_error(LuvCall* call) {
+    api->push_boolean(call, api->on_error(call, "fixture errors", on_error_seen, NULL, LUV_INLINE) != NULL);
+}
+
+static void export_last_error(LuvCall* call) {
+    api->push_string(call, last_error_text);
+}
+
+static void on_closing(LuvCall* call) {
+    LuvValue closed = luv_boolean(1);
+    api->set_global(call, "nativeClosed", &closed);
+}
+
+static void export_hook_close(LuvCall* call) {
+    api->push_boolean(call, api->on_close(call, "fixture close", on_closing, NULL, LUV_INLINE) != NULL);
+}
+
 static void export_post_name(LuvCall* call) {
     LuvValue target = luv_nil();
     if (api->arg_value(call, 0, &target) != LUV_OK || !target.handle) {
@@ -789,6 +835,11 @@ static const LuvMethod exported[] = {
     {"window_shape", export_window_shape, LUV_INLINE},
     {"start_ticks", export_start_ticks, LUV_INLINE},
     {"stop_ticks", export_stop_ticks, LUV_INLINE},
+    {"hook_heartbeat", export_hook_heartbeat, LUV_INLINE},
+    {"unhook_heartbeat", export_unhook_heartbeat, LUV_INLINE},
+    {"hook_error", export_hook_error, LUV_INLINE},
+    {"last_error", export_last_error, LUV_INLINE},
+    {"hook_close", export_hook_close, LUV_INLINE},
     {"post_name", export_post_name, LUV_WORKER},
     {"sideload", export_sideload, LUV_INLINE},
     {0},

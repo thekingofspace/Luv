@@ -924,3 +924,37 @@ results.failed = tostring(select(2, pcall(lib.Exports.sideload, "  ", "x")))
     assert_eq!(number(&results, "emptySize"), 0.0);
     assert!(text(&results, "failed").contains("needs a name"), "{}", text(&results, "failed"));
 }
+
+#[tokio::test]
+async fn a_library_hooks_the_heartbeat_errors_and_closing() {
+    let outcome = run_dll(
+        r#"
+local DLL = import("DLL")
+local lib = DLL.Load(FIXTURE)
+results = {}
+results.hooked = lib.Exports.hook_heartbeat()
+task.wait(0.2)
+results.beats = lib.Exports.unhook_heartbeat()
+task.wait(0.1)
+results.after = lib.Exports.unhook_heartbeat()
+results.errorHooked = lib.Exports.hook_error()
+local ok = epcall(function()
+    error("native should see this", 0)
+end)
+task.wait(0.05)
+results.lastError = lib.Exports.last_error()
+results.closeHooked = lib.Exports.hook_close()
+"#,
+    )
+    .await;
+    outcome.assert_clean();
+    let results: Table = outcome.global("results");
+    assert!(flag(&results, "hooked"));
+    let beats = number(&results, "beats");
+    assert!(beats >= 5.0, "the heartbeat hook should run about 12 times in 0.2 seconds, got {beats}");
+    assert_eq!(number(&results, "after"), beats, "a cancelled hook stops running");
+    assert!(flag(&results, "errorHooked"));
+    assert_eq!(text(&results, "lastError"), "native should see this");
+    assert!(flag(&results, "closeHooked"));
+    assert!(outcome.global::<bool>("nativeClosed"), "the close hook should run when the game ends");
+}

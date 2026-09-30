@@ -4,11 +4,114 @@ Your game is a set of Luau scripts. This page shows how luv starts them and how 
 
 ## The main script
 
-When the game starts, luv runs the script set by `main` in [build.toml](../start/build-toml.md). The default is `src/main.luau`. Other scripts only run when a script loads them with `require`.
+When the game starts, luv runs the script set by `main` in [build.toml](../start/build-toml.md). The default is `src/main.luau`. Other scripts only run when a script loads them with `require`, or when a [header](#boot-scripts) tells luv to start them.
+
+The main script cannot be loaded with `require`. It already runs on its own.
 
 The main script runs from top to bottom. It can call functions that yield, like [Asset.Load](../reference/asset.md), right at the top level.
 
 Scripts can sit in any folder of the project. See [Where scripts can live](../start/project-layout.md#where-scripts-can-live). Files ending in `.luau` and `.lua` both work. Files ending in `.d.luau` only hold types. luv never runs them.
+
+## Boot scripts
+
+A comment at the very top of a script can tell luv to start it by itself, like the main script. Put it on the first lines, before any code.
+
+```luau title="src/Systems/Weather.luau"
+---@start
+local Weather = {}
+
+print("weather is running")
+```
+
+| Header | What luv does with the script |
+| --- | --- |
+| `---@start` | Starts it when the game starts, on the main thread. |
+| `---@startasync` | Starts it when the game starts, on a thread of its own. See [Parallel code](parallel.md). |
+| `---@boot` | Runs it on every thread as soon as the thread starts, before any other code of that thread. |
+| `---@bootready` | Runs it on a thread when that thread calls [MarkReady](../reference/thread.md#markready). |
+
+When the game starts, luv runs things in this order:
+
+1. The `---@boot` scripts, on the main thread.
+2. The `---@startasync` scripts, each on a new thread.
+3. The `---@start` scripts.
+4. The main script.
+
+Scripts of the same kind start in the order of their paths. Each one runs on its own coroutine, so a script that waits does not hold up the ones after it.
+
+A script with one of these headers cannot be loaded with `require`, the same as the main script. It errors with `src/Systems/Weather.luau is started by luv on its own and cannot be required`.
+
+### Every thread
+
+A `---@boot` script runs on every thread, not only the main one. That includes each [parallel block](parallel.md), [task.parallel](parallel.md#task-parallel), [BindParallel](parallel.md#bindparallel) and `---@startasync` thread. Use it to set up globals that every part of the game needs.
+
+```luau title="src/Setup.luau"
+---@boot
+global.new("GAME_VERSION", "1.4")
+global.new("Items", import("Registry").Safe("Items"))
+```
+
+A boot script should set things up before it waits for anything, because the code of the thread starts as soon as the boot script yields.
+
+### Ready scripts
+
+A `---@bootready` script waits for its thread to say it is ready. That lets a thread set itself up first and run shared code after.
+
+```luau title="src/Entities.luau"
+---@startasync
+local Thread = import("Thread")
+
+Thread.Set("Entities")
+Thread.Running():MarkReady()
+```
+
+```luau title="src/Announce.luau"
+---@bootready
+local Thread = import("Thread")
+
+print(Thread.Running().Name, "is ready")
+```
+
+The main thread can call `MarkReady` too.
+
+### Where headers work
+
+Headers work in the scripts of your game. Scripts in a [container](containers.md) and mods loaded with [ecall](../reference/globals.md#ecall) keep their headers as plain comments, so a mod cannot start code on its own.
+
+## Capturing compile times
+
+`---@capture` prints a line when the script finishes compiling. It is for keeping an eye on large scripts and for progress reports while you build.
+
+```luau title="src/Systems/Physics.luau"
+---@capture
+```
+
+```text
+Physics.luau finished compiling in 0.012s with 2 parallel chunks
+```
+
+A parallel chunk is one piece of [parallel code](parallel.md) that luv split out of the script.
+
+Give it your own message in brackets. luv puts the name of the script in front.
+
+```luau
+---@capture["took %time% to complete"]
+```
+
+```text
+Physics.luau finished compiling took 0.012 to complete
+```
+
+| Placeholder | Becomes |
+| --- | --- |
+| `%time%` | The seconds it took to compile. |
+| `%chunks%` | How many parallel chunks luv made from it. |
+| `%name%` | The file name, like `Physics.luau`. |
+| `%path%` | The path, like `src/Systems/Physics.luau`. |
+| `%lines%` | How many lines it has. |
+| `%size%` | Its size in bytes. |
+
+`luv build` and `luv package` print these while they compile. `luv test` prints them when it first loads the script. `---@capture` can sit beside any other header.
 
 ## Engine libraries
 
@@ -227,3 +330,5 @@ You cannot read a game script as a file. [Asset](../reference/asset.md) and [FS]
 | `error requiring module "@nope/x": @nope is not a valid alias` | No config file defines the alias. |
 | `module must return a single value` | The module returned more than one value. |
 | `'Sound' cannot be imported, the available imports are ...` | `import` got a name that does not exist. |
+| `src/main.luau is the main script and cannot be required` | Something tried to `require` the main script. |
+| `src/x.luau is started by luv on its own and cannot be required` | Something tried to `require` a script with a [header](#boot-scripts). |

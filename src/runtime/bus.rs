@@ -1,8 +1,9 @@
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use mlua::{Lua, MultiValue, Result, Value, Vector};
+use mlua::{Lua, MultiValue, Result, Table, Value, Vector};
 use tokio::sync::mpsc;
 
 use super::imports;
@@ -22,6 +23,7 @@ pub enum Packet {
     Buffer(Box<[u8]>),
     Table(Box<[(Packet, Packet)]>),
     Import(Box<str>),
+    Module(Box<str>),
     UDim([f64; 3]),
     Color([f64; 4]),
     EnumItem(Box<str>, Box<str>),
@@ -41,8 +43,51 @@ pub fn encode_value(lua: &Lua, value: Value) -> std::result::Result<Packet, Stri
     Encoder {
         lua,
         visiting: Vec::new(),
+        modules: None,
     }
     .encode(value, 0)
+}
+
+const LOADER_CACHE: &str = "__MLUA_LOADER_CACHE";
+
+fn loaded_modules(lua: &Lua) -> HashMap<*const c_void, String> {
+    let Ok(Some(cache)) = lua.named_registry_value::<Option<Table>>(LOADER_CACHE) else {
+        return HashMap::new();
+    };
+    cache
+        .pairs::<String, Value>()
+        .filter_map(|pair| {
+            let (path, value) = pair.ok()?;
+            let Value::Table(table) = value else { return None };
+            Some((table.to_pointer(), path))
+        })
+        .collect()
+}
+
+fn require_path(lua: &Lua, path: &str) -> Result<Value> {
+    let cache = match lua.named_registry_value::<Option<Table>>(LOADER_CACHE)? {
+        Some(cache) => cache,
+        None => {
+            let cache = lua.create_table()?;
+            lua.set_named_registry_value(LOADER_CACHE, &cache)?;
+            cache
+        }
+    };
+    let cached: Value = cache.raw_get(path)?;
+    if !cached.is_nil() {
+        return Ok(cached);
+    }
+    let engine = lua
+        .app_data_ref::<Arc<super::Engine>>()
+        .map(|engine| engine.clone())
+        .ok_or_else(|| mlua::Error::runtime("the luv engine is not running"))?;
+    let chunk = super::load_unit(lua, engine.vfs().as_ref(), path, 0)?;
+    let loaded = match chunk.call::<Value>(())? {
+        Value::Nil => Value::Boolean(true),
+        value => value,
+    };
+    cache.raw_set(path, loaded.clone())?;
+    Ok(loaded)
 }
 
 pub fn decode(lua: &Lua, packets: &[Packet]) -> Result<MultiValue> {
@@ -66,6 +111,7 @@ pub fn decode_value(lua: &Lua, packet: &Packet) -> Result<Value> {
             Value::Table(table)
         }
         Packet::Import(name) => imports::get(lua, name)?,
+        Packet::Module(path) => require_path(lua, path)?,
         Packet::UDim([x, y, z]) => Value::UserData(lua.create_userdata(UDim::new(*x, *y, *z))?),
         Packet::Color([r, g, b, a]) => Value::UserData(lua.create_userdata(Color::new(*r, *g, *b, *a))?),
         Packet::EnumItem(enum_type, name) => EnumItem::find(enum_type, name)
@@ -77,6 +123,7 @@ pub fn decode_value(lua: &Lua, packet: &Packet) -> Result<Value> {
 struct Encoder<'a> {
     lua: &'a Lua,
     visiting: Vec<*const c_void>,
+    modules: Option<HashMap<*const c_void, String>>,
 }
 
 impl Encoder<'_> {
@@ -108,6 +155,10 @@ impl Encoder<'_> {
                 let Value::Table(table) = value else {
                     return Err(format!("{} objects cannot be sent between threads", object_name(&value)));
                 };
+                let modules = self.modules.get_or_insert_with(|| loaded_modules(self.lua));
+                if let Some(path) = modules.get(&table.to_pointer()) {
+                    return Ok(Packet::Module(path.as_str().into()));
+                }
                 if depth >= MAX_DEPTH {
                     return Err(format!("tables nested deeper than {MAX_DEPTH} levels cannot be sent between threads"));
                 }
@@ -142,6 +193,10 @@ fn object_name(value: &Value) -> String {
 
 pub enum Message {
     Topic { topic: Arc<str>, payload: Payload },
+    Exception(Packet),
+    Call(Payload),
+    Stop,
+    Registry { name: Arc<str>, id: Arc<str> },
     Close,
 }
 
@@ -205,6 +260,32 @@ impl Bus {
         for _ in 0..failed {
             self.activity.exit();
         }
+    }
+
+    pub fn broadcast_except(&self, sender: Option<u64>, make: impl Fn() -> Message) {
+        let mailboxes = self.mailboxes.lock().unwrap_or_else(PoisonError::into_inner);
+        for (id, mailbox) in mailboxes.iter() {
+            if Some(*id) == sender {
+                continue;
+            }
+            self.activity.enter(1);
+            if mailbox.send(make()).is_err() {
+                self.activity.exit();
+            }
+        }
+    }
+
+    pub fn send_to(&self, id: u64, message: Message) -> bool {
+        let mailboxes = self.mailboxes.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some((_, sender)) = mailboxes.iter().find(|(mailbox, _)| *mailbox == id) else {
+            return false;
+        };
+        self.activity.enter(1);
+        if sender.send(message).is_err() {
+            self.activity.exit();
+            return false;
+        }
+        true
     }
 
     pub fn begin_close(&self) {

@@ -485,6 +485,34 @@ fn open(path: &str, candidates: &[PathBuf]) -> std::result::Result<(libloading::
     Err(format!("cannot find '{path}', looked for {}", looked.join(", ")))
 }
 
+fn embedded(engine: &Engine, path: &str) -> Option<PathBuf> {
+    use std::hash::{Hash, Hasher};
+    let file = Path::new(path).file_name()?;
+    for variant in variants(Path::new(file)) {
+        let inner = format!("{}/{}", crate::plugins::EMBEDDED_DIR, variant.to_string_lossy());
+        if !engine.vfs().is_file(&inner) {
+            continue;
+        }
+        let bytes = engine.vfs().read(&inner).ok()?;
+        let mut hasher = std::hash::DefaultHasher::new();
+        bytes.hash(&mut hasher);
+        let folder = std::env::temp_dir()
+            .join("luv-natives")
+            .join(crate::project::file_stem(engine.game_name()))
+            .join(format!("{:016x}", hasher.finish()));
+        let target = folder.join(&variant);
+        let current = std::fs::metadata(&target).is_ok_and(|metadata| metadata.len() == bytes.len() as u64);
+        if !current {
+            std::fs::create_dir_all(&folder).ok()?;
+            let partial = folder.join(format!("{}.part", variant.to_string_lossy()));
+            std::fs::write(&partial, &bytes).ok()?;
+            std::fs::rename(&partial, &target).ok()?;
+        }
+        return Some(target);
+    }
+    None
+}
+
 impl Library {
     pub const CLASS_NAME: &'static str = "Library";
 
@@ -492,11 +520,12 @@ impl Library {
         if path.trim().is_empty() {
             return Err(runtime("DLL.Load needs the path of a library"));
         }
-        let directories = lua
-            .app_data_ref::<Arc<Engine>>()
-            .map(|engine| engine.library_dirs())
-            .unwrap_or_default();
-        let candidates = candidates(&path, &directories);
+        let engine = lua.app_data_ref::<Arc<Engine>>().map(|engine| engine.clone());
+        let directories = engine.as_ref().map(|engine| engine.library_dirs()).unwrap_or_default();
+        let mut candidates = candidates(&path, &directories);
+        if let Some(extracted) = engine.as_deref().and_then(|engine| embedded(engine, &path)) {
+            candidates.insert(0, extracted);
+        }
         let (sender, receiver) = crossbeam_channel::unbounded();
         let worker = Worker::new(sender);
         let (ready, loaded) = oneshot::channel();

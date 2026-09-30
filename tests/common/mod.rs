@@ -84,7 +84,11 @@ pub async fn run_with(
 
 pub async fn run_source(root: &Path) -> Outcome {
     let project = Project::load(root).unwrap();
-    run(Arc::new(project.source_vfs()), &project.entry().unwrap()).await
+    let boot = builder::boot_scripts(&project).unwrap();
+    run_with(Arc::new(project.source_vfs()), &project.entry().unwrap(), move |builder| {
+        builder.boot(boot)
+    })
+    .await
 }
 
 pub async fn build(root: &Path) -> Pak {
@@ -96,7 +100,8 @@ pub async fn build(root: &Path) -> Pak {
 pub async fn run_package(root: &Path) -> Outcome {
     let pak = build(root).await;
     let game = GameInfo::from_manifest(pak.manifest()).unwrap();
-    run(Arc::new(pak), &game.main).await
+    let boot = game.boot_scripts();
+    run_with(Arc::new(pak), &game.main, move |builder| builder.boot(boot)).await
 }
 
 pub async fn run_both(root: &Path) -> [Outcome; 2] {
@@ -108,10 +113,15 @@ pub async fn run_both_with(
     customize: impl Fn(EngineBuilder) -> EngineBuilder,
 ) -> [Outcome; 2] {
     let project = Project::load(root).unwrap();
-    let source = run_with(Arc::new(project.source_vfs()), &project.entry().unwrap(), &customize).await;
+    let boot = builder::boot_scripts(&project).unwrap();
+    let source = run_with(Arc::new(project.source_vfs()), &project.entry().unwrap(), |builder| {
+        customize(builder.boot(boot.clone()))
+    })
+    .await;
     let pak = build(root).await;
     let game = GameInfo::from_manifest(pak.manifest()).unwrap();
-    let package = run_with(Arc::new(pak), &game.main, &customize).await;
+    let boot = game.boot_scripts();
+    let package = run_with(Arc::new(pak), &game.main, |builder| customize(builder.boot(boot.clone()))).await;
     [source, package]
 }
 

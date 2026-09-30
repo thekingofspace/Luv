@@ -19,7 +19,7 @@ use super::memory::{Block, Hold, Pointer};
 use crate::datatypes::{Color, UDim};
 use crate::runtime::Scheduler;
 
-pub const API_VERSION: u32 = 2;
+pub const API_VERSION: u32 = 3;
 const OK: i32 = 0;
 const INVALID: i32 = -4;
 pub(super) const INLINE: u32 = 1;
@@ -1394,6 +1394,11 @@ pub struct Api {
     schedule: unsafe extern "C" fn(*mut Call, *const c_char, Option<RawFunction>, *mut c_void, f64, u32) -> *mut Task,
     cancel: unsafe extern "C" fn(*mut Task),
     push_asset: unsafe extern "C" fn(*mut Call, *const c_char, *const c_void, u64) -> i32,
+    on_heartbeat: unsafe extern "C" fn(*mut Call, *const c_char, Option<RawFunction>, *mut c_void, u32) -> *mut Task,
+    on_frame:
+        unsafe extern "C" fn(*mut Call, *mut RefHandle, *const c_char, Option<RawFunction>, *mut c_void, u32) -> *mut Task,
+    on_close: unsafe extern "C" fn(*mut Call, *const c_char, Option<RawFunction>, *mut c_void, u32) -> *mut Task,
+    on_error: unsafe extern "C" fn(*mut Call, *const c_char, Option<RawFunction>, *mut c_void, u32) -> *mut Task,
 }
 
 pub static API: Api = Api {
@@ -1460,6 +1465,10 @@ pub static API: Api = Api {
     schedule: host::schedule,
     cancel: host::cancel,
     push_asset: host::push_asset,
+    on_heartbeat: host::on_heartbeat,
+    on_frame: host::on_frame,
+    on_close: host::on_close,
+    on_error: host::on_error,
 };
 
 unsafe extern "C" fn define_service(registry: *mut Registry, info: *const RawServiceInfo) -> *const ClassShared {

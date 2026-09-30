@@ -5,7 +5,7 @@ use mlua::luau::{NavigateError, Require};
 use mlua::{Function, Lua, Result};
 
 use super::containers::Containers;
-use super::{aliases, load_unit};
+use super::{Engine, aliases, load_unit};
 use crate::vfs::{self, Vfs};
 
 const EXTENSIONS: [&str; 2] = ["luau", "lua"];
@@ -13,6 +13,7 @@ pub(crate) const CONFIG_FILES: [&str; 2] = [".luaurc", ".config.luau"];
 
 pub struct VfsRequirer {
     vfs: Arc<dyn Vfs>,
+    engine: Option<Arc<Engine>>,
     containers: Option<Arc<Containers>>,
     module: Vec<String>,
     resolved: Option<String>,
@@ -22,6 +23,7 @@ impl VfsRequirer {
     pub fn new(vfs: Arc<dyn Vfs>) -> Self {
         Self {
             vfs,
+            engine: None,
             containers: None,
             module: Vec::new(),
             resolved: None,
@@ -30,6 +32,11 @@ impl VfsRequirer {
 
     pub fn with_containers(mut self, containers: Arc<Containers>) -> Self {
         self.containers = Some(containers);
+        self
+    }
+
+    pub fn with_engine(mut self, engine: Arc<Engine>) -> Self {
+        self.engine = Some(engine);
         self
     }
 
@@ -182,6 +189,9 @@ impl Require for VfsRequirer {
 
     fn loader(&self, lua: &Lua) -> Result<Function> {
         let path = self.resolved.as_deref().ok_or_else(|| mlua::Error::runtime("no module is selected"))?;
+        if let Some(reason) = self.engine.as_ref().and_then(|engine| engine.protection(path)) {
+            return Err(mlua::Error::runtime(format!("{path} {reason} and cannot be required")));
+        }
         load_unit(lua, self.vfs.as_ref(), path, 0)
     }
 }

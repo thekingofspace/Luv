@@ -444,6 +444,8 @@ print(Physics.Step(1 / 60))
 
 A type file tells the Luau language server what your plugin gives Luau. Put it in `native` with a name that ends in `.d.luau`.
 
+It does not have to be in `native`. luv folds in every file that ends in `.d.luau`, anywhere in your project, so a script can keep its types right beside it. It skips `types.d.luau` itself, a file of that name in any folder, hidden folders, the build folder and the `_Index` folder of packages.
+
 ```tree
 my-game/
 ├── build.toml
@@ -481,8 +483,6 @@ export type Imports = {
 `luv init` reads every type file and writes one `types.d.luau` from the engine types and all of them. It starts from nothing each time, so a type file you delete leaves no trace. `luv test` and `luv build` do the same before they run. `luv types` does only this and prints what changed.
 
 In the file it writes, your fields sit at the end of `Imports` and `WindowAPIs` under a line that names where they came from, and your other types sit at the end of the file between two lines that name the file.
-
-A type file is a part of `types.d.luau`, not a file that stands on its own. It uses types that only exist once luv folds it in, and it adds fields to `Imports`, which is already there. Your editor would mark that, so luv tells it to leave these files alone. See [Plugin type files](../start/editor-setup.md#plugin-type-files) for the setting and for how to keep the file quiet while it is open.
 
 A type file is a part of `types.d.luau`, not a file that stands on its own. It uses types that only exist once luv folds it in, and it adds fields to `Imports`, which is already there. Your editor would mark that, so luv tells it to leave these files alone. See [Plugin type files](../start/editor-setup.md#plugin-type-files) for the setting and for how to keep the file quiet while it is open.
 
@@ -572,6 +572,24 @@ LuvValue level = luv_number(0.8);
 api->post_call(sim.signal, "Fire", &level, 1);
 ```
 
+### Hooks
+
+A hook runs a C function when something happens in the engine, without Luau binding anything. `on_heartbeat` runs on every beat of [Process.Heartbeat](../reference/process.md#heartbeat), `on_frame` on every frame of a window, `on_close` when the game closes and `on_error` for every error that [Exception](../reference/exception.md) sees.
+
+```c
+static void seen(LuvCall* call) {
+    uint64_t length = 0;
+    const char* message = api->opt_string(call, 0, "", &length);
+    write_to_crash_log(message);
+}
+
+static void start(LuvCall* call) {
+    api->on_error(call, "crash log", seen, NULL, LUV_INLINE);
+}
+```
+
+Each one gives back a `LuvTask*`, and `cancel` removes it. The arguments of each hook are in [Hooks](../reference/native-c.md#hooks).
+
 ### Work on a timer
 
 `schedule` runs a C function again and again, with a gap you pick. With `LUV_INLINE` it runs on the game thread, so it can reach the engine. Keep it short. `cancel` stops it.
@@ -617,9 +635,38 @@ static void tone(LuvCall* call) {
 }
 ```
 
+## Plugins inside the game
+
+Put a plugin in a folder named `nativeInter` instead of `native` to build it into the game program itself. It works the same in every way, the same folder rules, the same type files and the same `DLL.Load`. Only where it ends up is different.
+
+```tree
+my-game/
+├── native/
+│   └── counter.c
+├── nativeInter/
+│   └── physics.c
+└── src/
+    └── main.luau
+```
+
+| Folder | Where the library ends up |
+| --- | --- |
+| `native/` | Next to the game program, as its own file. |
+| `nativeInter/` | Inside the game file. The package is one program with nothing beside it. |
+
+When the game loads one, luv writes it out to a folder in the temporary files of the system the first time and loads it from there. A newer build writes a new copy, so an old one is never loaded by mistake.
+
+Load it with the same line either way:
+
+```luau
+local physics = DLL.Load("./physics")
+```
+
+With `luv test`, luv builds `nativeInter` into its own folder inside the build folder and loads it from there. The `native` folder is on its include path too, so `#include "luv.h"` works without a copy.
+
 ## Shipping plugins
 
-luv never packs native libraries into the game file. They sit next to it:
+luv never packs the libraries of `native` into the game file. They sit next to it:
 
 - `luv build` leaves them in the build folder, next to the `.luvit` file. `luv run` finds them there.
 - `luv package` copies them into `build/package/`, next to the game program.

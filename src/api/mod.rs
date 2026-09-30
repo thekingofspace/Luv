@@ -4,12 +4,15 @@ pub mod codec;
 mod container;
 mod crypto;
 mod dll;
+pub(crate) mod exception;
 mod fs;
 mod net;
 mod process;
 mod random;
+pub(crate) mod registry;
 pub(crate) mod renderable;
 mod shader;
+pub(crate) mod thread;
 mod viewport;
 mod window;
 
@@ -32,13 +35,16 @@ pub fn libraries(lua: &Lua, engine: &Arc<Engine>, heartbeat: &AnyUserData) -> Re
         ("Container", Value::Table(container::create(lua, engine)?)),
         ("Crypto", Value::Table(crypto::create(lua)?)),
         ("DLL", Value::Table(dll::create(lua)?)),
+        ("Exception", exception::create(lua)?),
         ("FS", Value::Table(fs::create(lua, engine)?)),
         ("Net", Value::Table(net::create(lua)?)),
         ("Process", Value::Table(process::create(lua, engine, heartbeat)?)),
         ("Random", Value::Table(random::create(lua)?)),
+        ("Registry", Value::Table(registry::create(lua)?)),
         ("Serde", Value::Table(codec::create(lua)?)),
         ("Shader", Value::Table(shader::create(lua)?)),
         ("Signal", Value::Table(signal)),
+        ("Thread", Value::Table(thread::create(lua)?)),
         ("Viewport", Value::Table(viewport::create(lua, engine)?)),
         ("Window", Value::Table(window::create(lua)?)),
     ])

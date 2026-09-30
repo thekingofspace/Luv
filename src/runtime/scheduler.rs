@@ -185,11 +185,13 @@ impl Wait {
 }
 
 type Reporter = Rc<dyn Fn(mlua::Error)>;
+type Hook = Rc<dyn Fn(&mlua::Error, Option<&Thread>)>;
 
 #[derive(Clone)]
 pub struct Scheduler {
     tracker: Tracker,
     reporter: Reporter,
+    hook: Rc<RefCell<Option<Hook>>>,
     driving: Rc<RefCell<HashSet<*const c_void>>>,
 }
 
@@ -198,6 +200,7 @@ impl Scheduler {
         Self {
             tracker,
             reporter: Rc::new(reporter),
+            hook: Rc::new(RefCell::new(None)),
             driving: Rc::new(RefCell::new(HashSet::new())),
         }
     }
@@ -213,6 +216,22 @@ impl Scheduler {
     }
 
     pub fn report(&self, error: mlua::Error) {
+        self.report_from(error, None);
+    }
+
+    pub fn report_quiet(&self, error: mlua::Error) {
+        (self.reporter)(error);
+    }
+
+    pub fn set_hook(&self, hook: impl Fn(&mlua::Error, Option<&Thread>) + 'static) {
+        *self.hook.borrow_mut() = Some(Rc::new(hook));
+    }
+
+    fn report_from(&self, error: mlua::Error, thread: Option<&Thread>) {
+        let hook = self.hook.borrow().clone();
+        if let Some(hook) = hook {
+            hook(&error, thread);
+        }
         (self.reporter)(error);
     }
 
@@ -294,7 +313,7 @@ impl Scheduler {
     ) {
         match lua.create_thread(function) {
             Ok(thread) => self.drive(thread, args, true, then),
-            Err(error) => self.settle(Some(Err(error)), then),
+            Err(error) => self.settle(Some(Err(error)), None, then),
         }
     }
 
@@ -320,13 +339,13 @@ impl Scheduler {
     ) {
         let mut stream = match thread.clone().into_async::<MultiValue>(args) {
             Ok(stream) => Box::pin(stream),
-            Err(error) => return self.settle(Some(Err(error)), then),
+            Err(error) => return self.settle(Some(Err(error)), Some(&thread), then),
         };
 
         if immediate {
             let mut context = Context::from_waker(Waker::noop());
             if let Poll::Ready(result) = self.step(stream.as_mut(), &mut context) {
-                return self.settle(result, then);
+                return self.settle(result, Some(&thread), then);
             }
         }
 
@@ -336,8 +355,8 @@ impl Scheduler {
         tokio::task::spawn_local(async move {
             let result = poll_fn(|context| scheduler.step(stream.as_mut(), context)).await;
             scheduler.driving.borrow_mut().remove(&pointer);
+            scheduler.settle(result, Some(&thread), then);
             drop(thread);
-            scheduler.settle(result, then);
         });
     }
 
@@ -348,11 +367,16 @@ impl Scheduler {
         result
     }
 
-    fn settle(&self, result: Option<Result<MultiValue>>, then: impl FnOnce(Option<MultiValue>)) {
+    fn settle(
+        &self,
+        result: Option<Result<MultiValue>>,
+        thread: Option<&Thread>,
+        then: impl FnOnce(Option<MultiValue>),
+    ) {
         let values = match result {
             Some(Ok(values)) => Some(values),
             Some(Err(error)) => {
-                self.report(error);
+                self.report_from(error, thread);
                 None
             }
             None => None,

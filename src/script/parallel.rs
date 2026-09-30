@@ -5,8 +5,8 @@ use std::thread;
 use full_moon::LuaVersion;
 use full_moon::ast::luau::{ConstAssignment, ConstFunction, TypeFunction, TypeInfo};
 use full_moon::ast::{
-    Block, Call, Expression, FunctionArgs, FunctionBody, GenericFor, LocalAssignment, LocalFunction, NumericFor,
-    Parameter, Prefix, Repeat, Stmt, Suffix, Var,
+    AnonymousFunction, Block, Call, Expression, FunctionArgs, FunctionBody, FunctionCall, FunctionDeclaration,
+    GenericFor, Index, LocalAssignment, LocalFunction, NumericFor, Parameter, Prefix, Repeat, Stmt, Suffix, Var,
 };
 use full_moon::node::Node;
 use full_moon::tokenizer::TokenReference;
@@ -15,6 +15,12 @@ use full_moon::visitors::Visitor;
 pub const ENTER: &str = "EnterParallel";
 pub const EXIT: &str = "ExitParallel";
 pub const HOOK: &str = "__luv_parallel";
+pub const FUNCTION_HOOK: &str = "__luv_parallel_function";
+pub const DESYNCHRONIZE: &str = "desynchronize";
+pub const SYNCHRONIZE: &str = "synchronize";
+pub const BIND: &str = "BindParallel";
+pub const SPAWN: &str = "parallel";
+const TASK: &str = "task";
 
 const PARSER_STACK_SIZE: usize = 64 * 1024 * 1024;
 
@@ -32,8 +38,15 @@ impl fmt::Display for ParallelError {
 
 impl std::error::Error for ParallelError {}
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClusterKind {
+    Block,
+    Function,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cluster {
+    pub kind: ClusterKind,
     pub line: usize,
     pub captures: Vec<String>,
     pub source: String,
@@ -46,7 +59,9 @@ pub struct Units {
 }
 
 pub fn has_markers(source: &str) -> bool {
-    source.contains(ENTER) || source.contains(EXIT)
+    [ENTER, EXIT, SYNCHRONIZE, BIND, SPAWN]
+        .iter()
+        .any(|marker| source.contains(marker))
 }
 
 pub fn split(source: &str) -> Result<Units, ParallelError> {
@@ -89,35 +104,63 @@ fn split_on_this_thread(source: &str) -> Result<Units, ParallelError> {
     let mut regions = analyzer.regions;
     regions.sort_by_key(|region| region.start);
 
-    let mut main = String::with_capacity(source.len());
-    let mut clusters = Vec::with_capacity(regions.len());
-    let mut cursor = 0;
-    for (index, region) in regions.into_iter().enumerate() {
-        main.push_str(&source[cursor..region.start]);
-        main.push_str(&format!("{HOOK}({}, \"{}\"", index + 1, region.captures.join(",")));
-        for capture in &region.captures {
-            main.push_str(", ");
-            main.push_str(capture);
-        }
-        main.push(')');
-        main.push_str(&"\n".repeat(newlines(&source[region.start..region.end])));
-        cursor = region.end;
+    let clusters = regions
+        .iter()
+        .enumerate()
+        .map(|(index, region)| {
+            let mut unit = String::new();
+            if !region.captures.is_empty() {
+                unit.push_str(&format!("local {} = ...;", region.captures.join(", ")));
+            }
+            unit.push_str(&"\n".repeat(region.line - 1));
+            if region.kind == ClusterKind::Function {
+                unit.push_str("return ");
+            }
+            unit.push_str(&render(source, &regions, region.body_start, region.body_end, Some(index)));
+            Cluster {
+                kind: region.kind,
+                line: region.line,
+                captures: region.captures.clone(),
+                source: unit,
+            }
+        })
+        .collect();
 
-        let mut cluster = String::new();
-        if !region.captures.is_empty() {
-            cluster.push_str(&format!("local {} = ...;", region.captures.join(", ")));
-        }
-        cluster.push_str(&"\n".repeat(region.line - 1));
-        cluster.push_str(&source[region.body_start..region.body_end]);
-        clusters.push(Cluster {
-            line: region.line,
-            captures: region.captures,
-            source: cluster,
-        });
+    Ok(Units {
+        main: render(source, &regions, 0, source.len(), None),
+        clusters,
+    })
+}
+
+fn replacement(source: &str, regions: &[Region], index: usize) -> String {
+    let region = &regions[index];
+    let hook = match region.kind {
+        ClusterKind::Block => HOOK,
+        ClusterKind::Function => FUNCTION_HOOK,
+    };
+    let mut text = format!("{hook}({}, \"{}\"", index + 1, region.captures.join(","));
+    for capture in &region.captures {
+        text.push_str(", ");
+        text.push_str(capture);
     }
-    main.push_str(&source[cursor..]);
+    text.push(')');
+    text.push_str(&"\n".repeat(newlines(&source[region.start..region.end])));
+    text
+}
 
-    Ok(Units { main, clusters })
+fn render(source: &str, regions: &[Region], from: usize, to: usize, skip: Option<usize>) -> String {
+    let mut text = String::with_capacity(to - from);
+    let mut cursor = from;
+    for (index, region) in regions.iter().enumerate() {
+        if Some(index) == skip || region.start < cursor || region.end > to {
+            continue;
+        }
+        text.push_str(&source[cursor..region.start]);
+        text.push_str(&replacement(source, regions, index));
+        cursor = region.end;
+    }
+    text.push_str(&source[cursor..to]);
+    text
 }
 
 fn newlines(text: &str) -> usize {
@@ -146,12 +189,14 @@ struct Local {
 }
 
 struct Region {
+    kind: ClusterKind,
     start: usize,
     end: usize,
     body_start: usize,
     body_end: usize,
     line: usize,
     depth: usize,
+    opener: &'static str,
     captures: Vec<String>,
 }
 
@@ -161,11 +206,52 @@ impl Region {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Side {
+    Open,
+    Close,
+}
+
+#[derive(Clone, Copy)]
+struct Marker {
+    side: Side,
+    text: &'static str,
+    open: &'static str,
+    close: &'static str,
+}
+
+const LEGACY_OPEN: Marker = Marker {
+    side: Side::Open,
+    text: "EnterParallel()",
+    open: "EnterParallel()",
+    close: "ExitParallel()",
+};
+
+const LEGACY_CLOSE: Marker = Marker {
+    side: Side::Close,
+    text: "ExitParallel()",
+    ..LEGACY_OPEN
+};
+
+const TASK_OPEN: Marker = Marker {
+    side: Side::Open,
+    text: "task.desynchronize()",
+    open: "task.desynchronize()",
+    close: "task.synchronize()",
+};
+
+const TASK_CLOSE: Marker = Marker {
+    side: Side::Close,
+    text: "task.synchronize()",
+    ..TASK_OPEN
+};
+
 #[derive(Default)]
 struct Analyzer {
     scopes: Vec<Vec<Local>>,
     pending: Vec<(*const Block, Vec<Local>)>,
     deferred: Vec<*const Block>,
+    methods: HashSet<*const FunctionBody>,
     regions: Vec<Region>,
     markers: HashSet<usize>,
     function_depth: usize,
@@ -226,76 +312,149 @@ impl Analyzer {
         }
 
         let Some(declared) = declared else { return };
-        if let Some(region) = self.regions.iter_mut().find(|region| region.contains(position))
-            && declared < region.start
-            && !region.captures.contains(&name)
-        {
-            region.captures.push(name);
+        for region in self.regions.iter_mut() {
+            if region.contains(position) && declared < region.start && !region.captures.contains(&name) {
+                region.captures.push(name.clone());
+            }
         }
     }
 
-    fn marker<'a>(&mut self, stmt: &'a Stmt) -> Option<(&'static str, &'a TokenReference)> {
-        let Stmt::FunctionCall(call) = stmt else { return None };
+    fn task_member<'a>(
+        &self,
+        call: &'a FunctionCall,
+        shadowed: bool,
+    ) -> Option<(&'a TokenReference, String, &'a FunctionArgs)> {
         let Prefix::Name(token) = call.prefix() else { return None };
-        let kind = match name(token).as_str() {
-            ENTER => ENTER,
-            EXIT => EXIT,
-            _ => return None,
-        };
-        let suffixes: Vec<&Suffix> = call.suffixes().collect();
-        let [Suffix::Call(Call::AnonymousCall(args))] = suffixes.as_slice() else {
-            return None;
-        };
-        if !matches!(args, FunctionArgs::Parentheses { arguments, .. } if arguments.is_empty()) {
-            self.fail(line(token), format!("{kind}() does not take any arguments"));
+        if name(token) != TASK || shadowed {
             return None;
         }
-        Some((kind, token))
+        let suffixes: Vec<&Suffix> = call.suffixes().collect();
+        let [Suffix::Index(Index::Dot { name: member, .. }), Suffix::Call(Call::AnonymousCall(args))] = suffixes.as_slice()
+        else {
+            return None;
+        };
+        Some((token, name(member), args))
+    }
+
+    fn marker<'a>(&mut self, stmt: &'a Stmt, shadowed: bool) -> Option<(Marker, &'a TokenReference)> {
+        let Stmt::FunctionCall(call) = stmt else { return None };
+        let (marker, token, args) = match self.task_member(call, shadowed) {
+            Some((token, member, args)) if member == DESYNCHRONIZE => (TASK_OPEN, token, args),
+            Some((token, member, args)) if member == SYNCHRONIZE => (TASK_CLOSE, token, args),
+            Some(_) => return None,
+            None => {
+                let Prefix::Name(token) = call.prefix() else { return None };
+                let marker = match name(token).as_str() {
+                    ENTER => LEGACY_OPEN,
+                    EXIT => LEGACY_CLOSE,
+                    _ => return None,
+                };
+                let suffixes: Vec<&Suffix> = call.suffixes().collect();
+                let [Suffix::Call(Call::AnonymousCall(args))] = suffixes[..] else {
+                    return None;
+                };
+                (marker, token, args)
+            }
+        };
+        if !matches!(args, FunctionArgs::Parentheses { arguments, .. } if arguments.is_empty()) {
+            self.fail(line(token), format!("{} does not take any arguments", marker.text));
+            return None;
+        }
+        Some((marker, token))
     }
 
     fn find_regions(&mut self, block: &Block) {
-        let mut open: Option<(usize, usize, usize)> = None;
+        let mut open: Option<(usize, usize, usize, Marker)> = None;
+        let mut shadowed = self.resolve(TASK).is_some();
         for (stmt, semicolon) in block.stmts_with_semicolon() {
-            let Some((kind, token)) = self.marker(stmt) else { continue };
+            let declares = match stmt {
+                Stmt::LocalAssignment(local) => local.names().iter().any(|token| name(token) == TASK),
+                Stmt::LocalFunction(local) => name(local.name()) == TASK,
+                _ => false,
+            };
+            let found = self.marker(stmt, shadowed);
+            shadowed |= declares;
+            let Some((marker, token)) = found else { continue };
             let stmt_start = start(stmt);
             let stmt_end = semicolon.as_ref().map_or_else(|| end(stmt), end);
             let stmt_line = line(stmt);
 
-            match (kind, open) {
-                (ENTER, None) => {
-                    if self.regions.iter().any(|region| region.contains(stmt_start)) {
-                        self.fail(stmt_line, "EnterParallel() cannot be used inside another parallel block");
+            match (marker.side, open) {
+                (Side::Open, None) => {
+                    let inside = self
+                        .regions
+                        .iter()
+                        .any(|region| region.kind == ClusterKind::Block && region.contains(stmt_start));
+                    if inside {
+                        self.fail(stmt_line, format!("{} cannot be used inside another parallel block", marker.text));
                         return;
                     }
                     self.markers.insert(start(token));
-                    open = Some((stmt_start, stmt_end, stmt_line));
+                    open = Some((stmt_start, stmt_end, stmt_line, marker));
                 }
-                (ENTER, Some(_)) => {
-                    self.fail(stmt_line, "EnterParallel() cannot be nested, call ExitParallel() first");
+                (Side::Open, Some((_, _, _, opener))) => {
+                    self.fail(
+                        stmt_line,
+                        format!("{} cannot be nested, call {} first", marker.text, opener.close),
+                    );
                     return;
                 }
-                (_, None) => {
-                    self.fail(stmt_line, "ExitParallel() has no matching EnterParallel() in the same block");
+                (Side::Close, None) => {
+                    self.fail(
+                        stmt_line,
+                        format!("{} has no matching {} in the same block", marker.text, marker.open),
+                    );
                     return;
                 }
-                (_, Some((region_start, body_start, region_line))) => {
+                (Side::Close, Some((region_start, body_start, region_line, opener))) => {
                     self.markers.insert(start(token));
                     self.regions.push(Region {
+                        kind: ClusterKind::Block,
                         start: region_start,
                         end: stmt_end,
                         body_start,
                         body_end: stmt_start,
                         line: region_line,
                         depth: self.function_depth,
+                        opener: opener.open,
                         captures: Vec::new(),
                     });
                     open = None;
                 }
             }
         }
-        if let Some((_, _, region_line)) = open {
-            self.fail(region_line, "EnterParallel() has no matching ExitParallel() in the same block");
+        if let Some((_, _, region_line, opener)) = open {
+            self.fail(
+                region_line,
+                format!("{} has no matching {} in the same block", opener.open, opener.close),
+            );
         }
+    }
+
+    fn function_region(&mut self, function: &AnonymousFunction) {
+        let (from, to) = (start(function), end(function));
+        self.regions.push(Region {
+            kind: ClusterKind::Function,
+            start: from,
+            end: to,
+            body_start: from,
+            body_end: to,
+            line: line(function),
+            depth: self.function_depth,
+            opener: "",
+            captures: Vec::new(),
+        });
+    }
+}
+
+fn literal(arguments: &FunctionArgs, last: bool) -> Option<&AnonymousFunction> {
+    let FunctionArgs::Parentheses { arguments, .. } = arguments else {
+        return None;
+    };
+    let chosen = if last { arguments.iter().last() } else { arguments.iter().next() };
+    match chosen {
+        Some(Expression::Function(function)) => Some(function),
+        _ => None,
     }
 }
 
@@ -334,17 +493,59 @@ impl Visitor for Analyzer {
         self.pending.push((node.block(), Self::locals(node.names())));
     }
 
+    fn visit_function_declaration(&mut self, node: &FunctionDeclaration) {
+        if node.name().method_colon().is_some() {
+            self.methods.insert(node.body());
+        }
+    }
+
     fn visit_function_body(&mut self, node: &FunctionBody) {
         self.function_depth += 1;
         let parameters = node.parameters().iter().filter_map(|parameter| match parameter {
             Parameter::Name(token) => Some(token),
             _ => None,
         });
-        self.pending.push((node.block(), Self::locals(parameters)));
+        let mut locals = Self::locals(parameters);
+        if self.methods.contains(&(node as *const FunctionBody)) {
+            locals.insert(
+                0,
+                Local {
+                    name: "self".to_owned(),
+                    position: start(node),
+                },
+            );
+        }
+        self.pending.push((node.block(), locals));
     }
 
     fn visit_function_body_end(&mut self, _node: &FunctionBody) {
         self.function_depth -= 1;
+    }
+
+    fn visit_function_call(&mut self, call: &FunctionCall) {
+        if self.type_depth > 0 {
+            return;
+        }
+        if let Some((token, member, args)) = self.task_member(call, self.resolve(TASK).is_some()) {
+            if (member == DESYNCHRONIZE || member == SYNCHRONIZE) && !self.markers.contains(&start(token)) {
+                self.fail(line(token), format!("task.{member}() must be called on its own as a statement"));
+                return;
+            }
+            if member == SPAWN
+                && let Some(function) = literal(args, false)
+            {
+                self.function_region(function);
+            }
+            return;
+        }
+        for suffix in call.suffixes() {
+            if let Suffix::Call(Call::MethodCall(method)) = suffix
+                && name(method.name()) == BIND
+                && let Some(function) = literal(method.args(), true)
+            {
+                self.function_region(function);
+            }
+        }
     }
 
     fn visit_local_function(&mut self, node: &LocalFunction) {
@@ -402,14 +603,15 @@ impl Visitor for Analyzer {
         }
         let position = start(token);
         let depth = self.function_depth;
-        if self
+        let opener = self
             .regions
             .iter()
-            .any(|region| region.contains(position) && region.depth == depth)
-        {
+            .find(|region| region.kind == ClusterKind::Block && region.contains(position) && region.depth == depth)
+            .map(|region| region.opener);
+        if let Some(opener) = opener {
             self.fail(
                 line(token),
-                "`...` cannot be used directly inside a parallel block, store it in a local before EnterParallel()",
+                format!("`...` cannot be used directly inside a parallel block, store it in a local before {opener}"),
             );
         }
     }

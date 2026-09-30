@@ -11,7 +11,7 @@ end)
 
 ## Description
 
-`task` is a global, so every script has it without an `import`. It holds the five ways luv starts a coroutine or waits for time.
+`task` is a global, so every script has it without an `import`. It holds the ways luv starts a coroutine, waits for time and moves work to another thread.
 
 | Name | What it does |
 | --- | --- |
@@ -21,6 +21,9 @@ end)
 | [task.delay](#delay) | Starts a coroutine after a while. |
 | [task.create](#create) | Makes a [Task](#task-object), a coroutine you can start again and again. |
 | [task.count](#count) | How many coroutines luv is running. |
+| [task.parallel](#parallel) | Runs a function on a thread of its own. |
+| [task.desynchronize](#desynchronize) | Starts a parallel block. |
+| [task.synchronize](#synchronize) | Ends a parallel block. |
 
 Every one of these yields a coroutine and never a thread. The rest of the game keeps going while one waits. See [Yielding and coroutines](../manual/yielding.md).
 
@@ -185,6 +188,54 @@ How many coroutines luv is running for this thread right now. Useful while you a
 ```luau
 print(`running {task.count()} coroutines`)
 ```
+
+### parallel
+
+```luau
+task.parallel(body: (...any) -> ...any, ...: any): Thread
+```
+
+Runs `body` on a new thread, a real CPU thread with its own Luau state, and hands it the values after it. It returns a [Thread](thread.md#thread-object) at once and never waits.
+
+```luau
+local Messenger = import("Messenger")
+
+task.parallel(function(first: number, last: number)
+	local total = 0
+	for index = first, last do
+		total += index
+	end
+	Messenger:Fire("Total", total)
+end, 1, 10000000)
+```
+
+The function must be written inside the call. luv moves it to the other thread when it compiles the script, together with every local from outside that it uses. Imports and required modules can be used straight from the top of the script. See [task.parallel](../manual/parallel.md#task-parallel) for the details and the values that can be passed.
+
+### desynchronize
+
+```luau
+task.desynchronize()
+```
+
+Starts a parallel block. The lines up to the matching `task.synchronize()` run on a new thread, and the script goes on without waiting. It must be a statement of its own, with no arguments. See [Writing a block](../manual/parallel.md#writing-a-block).
+
+```luau
+local Messenger = import("Messenger")
+
+task.desynchronize()
+Messenger:Fire("Done", 1 + 1)
+task.synchronize()
+```
+
+It replaces [EnterParallel](globals.md#enterparallel), which works the same but is deprecated.
+
+### synchronize
+
+```luau
+task.synchronize()
+```
+
+Ends the parallel block that `task.desynchronize()` started. It must be in the same block of code. It replaces [ExitParallel](globals.md#exitparallel).
 
 ## Task object
 

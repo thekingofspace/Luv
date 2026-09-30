@@ -29,7 +29,24 @@ my-game/
 | `native/luv.h` | The C header for native plugins. |
 | `native/luv.rs` | The same API for Rust plugins. |
 | `src/main.luau` | The first script that runs. You can change it in `build.toml`. |
-| `types.d.luau` | Type info for your editor. luv writes it from the engine types and every plugin type file. It is never packed into the game. See [How luv builds it](editor-setup.md#how-luv-builds-it). |
+| `types.d.luau` | Type info for your editor. luv writes it from the engine types and every other `.d.luau` file in the project. It is never packed into the game. See [How luv builds it](editor-setup.md#how-luv-builds-it). |
+
+Two more folders have a special meaning when you add them.
+
+```tree
+my-game/
+├── export/
+│   ├── readme.txt
+│   └── licenses/
+│       └── font.txt
+└── nativeInter/
+    └── physics.c
+```
+
+| Path | What it is |
+| --- | --- |
+| `export/` | Files copied as they are next to the game. Everything in it, folders too, lands in the build folder with `luv test` and `luv build`, and in `build/package/` with `luv package`. It is never packed into the game. |
+| `nativeInter/` | Native plugins that are built into the game program instead of sitting next to it. See [Plugins inside the game](../manual/native-plugins.md#plugins-inside-the-game). |
 
 ## Where scripts can live
 
@@ -45,6 +62,7 @@ build/
 ├── aliases.json
 ├── cube.dll
 ├── Expansion.cont
+├── native-inter/
 ├── native-objects/
 ├── native-target/
 └── package/
@@ -59,6 +77,7 @@ build/
 | `aliases.json` | The list of aliases luv wrote into `.luaurc`. See [Scripts and modules](../manual/scripts.md#aliases-luv-writes-for-you). |
 | `cube.dll` or `libcube.so` | Native plugins built from `native/`. |
 | `Expansion.cont` | One file for each container. See [Containers and DLC](../manual/containers.md). |
+| `native-inter/` | The plugins built from `nativeInter/` for `luv test`. |
 | `native-objects/` | Temporary files from the C compiler. |
 | `native-target/` | The Cargo folder for Rust plugins. |
 | `package/` | The finished game made by `luv package`. Ship this folder. |
@@ -70,7 +89,7 @@ The file names come from the game name. Every character that is not a letter, di
 When you build, luv packs every file in the project except these:
 
 - `build.toml` and every `container.toml`.
-- The `native` folder.
+- The `native`, `nativeInter` and `export` folders. Plugins from `nativeInter` are added on their own, as libraries.
 - Files ending in `.d.luau`.
 - Files and folders whose names start with a dot. `.luaurc` and `.config.luau` are the only exceptions.
 - Native libraries such as `.dll` and `.so` files. luv warns you if it finds one outside `native`.

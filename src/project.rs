@@ -4,8 +4,8 @@ use std::path::{self, Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::plugins::NATIVE_DIR;
-use crate::runtime::CONFIG_FILES;
+use crate::plugins::{EXPORT_DIR, NATIVE_DIR, NATIVE_INTER_DIR};
+use crate::runtime::{BootScripts, CONFIG_FILES};
 use crate::vfs::{self, DirVfs};
 
 pub const MANIFEST_FILE: &str = "build.toml";
@@ -42,6 +42,14 @@ pub struct GameInfo {
     pub icon: Option<String>,
     #[serde(default = "default_main")]
     pub main: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub start: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub start_async: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub boot: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub boot_ready: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -130,6 +138,30 @@ impl GameInfo {
 
     pub fn to_manifest(&self) -> Result<String> {
         Ok(toml::to_string(self)?)
+    }
+
+    pub fn boot_scripts(&self) -> BootScripts {
+        BootScripts {
+            start: self.start.clone(),
+            start_async: self.start_async.clone(),
+            boot: self.boot.clone(),
+            boot_ready: self.boot_ready.clone(),
+        }
+    }
+
+    pub fn set_boot_scripts(&mut self, scripts: &BootScripts) {
+        let merge = |listed: &mut Vec<String>, found: &[String]| {
+            for path in found {
+                if !listed.contains(path) {
+                    listed.push(path.clone());
+                }
+            }
+            listed.sort();
+        };
+        merge(&mut self.start, &scripts.start);
+        merge(&mut self.start_async, &scripts.start_async);
+        merge(&mut self.boot, &scripts.boot);
+        merge(&mut self.boot_ready, &scripts.boot_ready);
     }
 }
 
@@ -234,7 +266,10 @@ impl Project {
                     continue;
                 };
                 let relative = vfs::join(&prefix, &name);
-                if name.starts_with('.') || output.as_deref() == Some(relative.as_str()) || relative == NATIVE_DIR {
+                if name.starts_with('.')
+                    || output.as_deref() == Some(relative.as_str())
+                    || [NATIVE_DIR, NATIVE_INTER_DIR, EXPORT_DIR].contains(&relative.as_str())
+                {
                     continue;
                 }
                 if path.join(CONTAINER_FILE).is_file() {
@@ -278,6 +313,8 @@ pub fn is_packable(relative: &str, name: &str) -> bool {
     relative != MANIFEST_FILE
         && relative != CONTAINER_FILE
         && relative != NATIVE_DIR
+        && relative != NATIVE_INTER_DIR
+        && relative != EXPORT_DIR
         && !name.ends_with(".d.luau")
         && !is_native_library(name)
 }
@@ -349,10 +386,12 @@ pub fn init(dir: &Path, name: Option<String>) -> Result<InitReport> {
     let parsed: BuildManifest = toml::from_str(&manifest).context("the build.toml template is invalid")?;
 
     let mut roots = vec![root.clone()];
+    let mut skipped = vec![root.join(default_output())];
     if existing && let Ok(project) = Project::load(&root) {
         roots = crate::typegen::roots(&project);
+        skipped = vec![project.output_dir()];
     }
-    let (types, _) = crate::typegen::build(&root, &roots)?;
+    let (types, _) = crate::typegen::build(&root, &roots, &skipped)?;
 
     let mut files = vec![
         (TYPES_FILE, types.as_str(), Policy::Sync),

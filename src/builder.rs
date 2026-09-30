@@ -2,13 +2,15 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use anyhow::{Context, Result, anyhow, bail};
 use tokio::task::{self, JoinSet};
 
-use crate::plugins::Built;
+use crate::plugins::{self, Built, EMBEDDED_DIR};
+use crate::progress::Progress;
 use crate::project::{CONTAINER_FILE, ContainerProject, Project, inside_any, is_native_library, is_packable, is_script};
+use crate::runtime::BootScripts;
 use crate::script;
 use crate::vfs::{self, EntryKind, PackedFile, Pak, PakWriter};
 
@@ -32,22 +34,84 @@ pub struct ContainerReport {
     pub build: Option<BuildReport>,
 }
 
-pub async fn build(project: &Project) -> Result<BuildReport> {
+fn read_head(path: &Path) -> Vec<u8> {
+    use std::io::Read;
+    let mut head = Vec::new();
+    if let Ok(file) = File::open(path) {
+        let _ = file.take(16 * 1024).read_to_end(&mut head);
+    }
+    head
+}
+
+fn scan_boot(files: &[(String, PathBuf)], entry: &str) -> BootScripts {
+    let mut found = BootScripts::default();
+    let mut scripts: Vec<&(String, PathBuf)> = files
+        .iter()
+        .filter(|(path, _)| is_script(path) && path != entry)
+        .collect();
+    scripts.sort_by(|a, b| a.0.cmp(&b.0));
+    for (path, source) in scripts {
+        let headers = script::headers(&read_head(source));
+        if headers.start_async {
+            found.start_async.push(path.clone());
+        } else if headers.start {
+            found.start.push(path.clone());
+        }
+        if headers.boot {
+            found.boot.push(path.clone());
+        }
+        if headers.boot_ready {
+            found.boot_ready.push(path.clone());
+        }
+    }
+    found
+}
+
+pub fn boot_scripts(project: &Project) -> Result<BootScripts> {
     let entry = project.entry()?;
     let containers = project.container_folders();
-    let (files, unpacked_libraries) = collect_files(&project.root, project.output_in_workspace().as_deref(), &containers)?;
+    let (files, _) = collect_files(&project.root, project.output_in_workspace().as_deref(), &containers)?;
+    let mut game = project.manifest.game.clone();
+    game.set_boot_scripts(&scan_boot(&files, &entry));
+    Ok(game.boot_scripts())
+}
+
+pub async fn build(project: &Project) -> Result<BuildReport> {
+    build_with(project, &Progress::quiet()).await
+}
+
+pub async fn build_with(project: &Project, progress: &Progress) -> Result<BuildReport> {
+    let entry = project.entry()?;
+    let containers = project.container_folders();
+    let (mut files, unpacked_libraries) =
+        collect_files(&project.root, project.output_in_workspace().as_deref(), &containers)?;
     if !files.iter().any(|(path, _)| *path == entry) {
         bail!("main script `{entry}` does not exist in {}", project.root.display());
     }
     let mut game = project.manifest.game.clone();
+    game.set_boot_scripts(&scan_boot(&files, &entry));
+    let workspace = project.clone();
+    let embedded = task::spawn_blocking(move || plugins::build_embedded(&workspace)).await??;
+    for library in embedded {
+        progress.line(format!("Embedded native library {}", library.file));
+        files.push((format!("{EMBEDDED_DIR}/{}", library.file), library.path));
+    }
     game.main = entry;
     let manifest = game.to_manifest()?;
-    let mut report = pack(files, manifest, project.package_path()).await?;
+    let mut report = pack(files, manifest, project.package_path(), progress, "").await?;
     report.unpacked_libraries = unpacked_libraries;
     Ok(report)
 }
 
 pub async fn build_containers(project: &Project, natives: &[Built]) -> Result<Vec<ContainerReport>> {
+    build_containers_with(project, natives, &Progress::quiet()).await
+}
+
+pub async fn build_containers_with(
+    project: &Project,
+    natives: &[Built],
+    progress: &Progress,
+) -> Result<Vec<ContainerReport>> {
     let containers = project.containers()?;
     if containers.is_empty() {
         return Ok(Vec::new());
@@ -82,7 +146,7 @@ pub async fn build_containers(project: &Project, natives: &[Built]) -> Result<Ve
     let output = project.output_dir();
     let mut reports = Vec::new();
     for (container, files) in planned {
-        reports.push(build_container(&container, files, natives, &output).await?);
+        reports.push(build_container(&container, files, natives, &output, progress).await?);
     }
     Ok(reports)
 }
@@ -92,6 +156,7 @@ async fn build_container(
     files: Vec<(String, PathBuf)>,
     natives: &[Built],
     output: &Path,
+    progress: &Progress,
 ) -> Result<ContainerReport> {
     let entry = container.entry()?;
     if !files.iter().any(|(path, _)| *path == entry) {
@@ -126,7 +191,8 @@ async fn build_container(
             build: None,
         });
     }
-    let report = pack(files, manifest, target.clone()).await?;
+    let label = format!("Container {} ", info.name);
+    let report = pack(files, manifest, target.clone(), progress, &label).await?;
     Ok(ContainerReport {
         name: info.name,
         version: info.version,
@@ -146,26 +212,49 @@ fn fresh(output: &Path, inputs: &[PathBuf]) -> bool {
         .all(|input| modified(input).is_none_or(|changed: SystemTime| changed <= built))
 }
 
-async fn pack(files: Vec<(String, PathBuf)>, manifest: String, target: PathBuf) -> Result<BuildReport> {
-    let mut tasks = JoinSet::new();
-    for (path, source) in files {
-        tasks.spawn_blocking(move || pack_file(path, &source));
-    }
-
-    let mut packed = Vec::new();
+async fn pack(
+    files: Vec<(String, PathBuf)>,
+    manifest: String,
+    target: PathBuf,
+    progress: &Progress,
+    label: &str,
+) -> Result<BuildReport> {
+    let (scripts, assets): (Vec<_>, Vec<_>) = files.into_iter().partition(|(path, _)| is_script(path));
+    let total = scripts.len() + assets.len();
+    let mut packed = Vec::with_capacity(total);
     let mut errors = Vec::new();
-    while let Some(result) = tasks.join_next().await {
-        match result? {
-            Ok(file) => packed.push(file),
-            Err(err) => errors.push(format!("{err:#}")),
+    for (stage, group) in [("Scripts", scripts), ("Assets", assets)] {
+        let count = group.len();
+        let mut tasks = JoinSet::new();
+        for (path, source) in group {
+            tasks.spawn_blocking(move || pack_file(path, &source));
+        }
+        let name = format!("{label}{}", stage.to_ascii_lowercase());
+        while let Some(result) = tasks.join_next().await {
+            match result? {
+                Ok((file, capture)) => {
+                    if let Some(line) = capture {
+                        progress.line(line);
+                    }
+                    packed.push(file);
+                }
+                Err(err) => errors.push(format!("{err:#}")),
+            }
+            progress.advance(&name, packed.len() + errors.len(), total);
+        }
+        if count > 0 && errors.is_empty() {
+            progress.line(format!("{label}{stage} complete ({count})"));
         }
     }
+    progress.done();
     if !errors.is_empty() {
         errors.sort();
         bail!("build failed:\n{}", errors.join("\n"));
     }
     packed.sort_by(|a, b| a.path.cmp(&b.path));
-    task::spawn_blocking(move || write_package(target, packed, &manifest)).await?
+    let report = task::spawn_blocking(move || write_package(target, packed, &manifest)).await??;
+    progress.line(format!("{label}Package written"));
+    Ok(report)
 }
 
 type Collected = (Vec<(String, PathBuf)>, Vec<String>);
@@ -204,16 +293,32 @@ fn collect_files(root: &Path, output: Option<&str>, excluded: &[String]) -> Resu
     Ok((files, libraries))
 }
 
-fn pack_file(path: String, source: &Path) -> Result<PackedFile> {
+fn pack_file(path: String, source: &Path) -> Result<(PackedFile, Option<String>)> {
     let raw = fs::read(source).with_context(|| format!("failed to read {path}"))?;
+    let mut capture = None;
     let (kind, data) = if is_script(&path) {
+        let started = Instant::now();
         let bundle = script::compile(&raw).map_err(|error| anyhow!("{path}:{error}"))?;
+        if let Some(message) = script::headers(&raw).capture {
+            let units = bundle.first_chunk::<4>().map_or(1, |count| u32::from_le_bytes(*count) as usize);
+            capture = Some(script::capture_line(
+                message.as_deref(),
+                &script::Compiled {
+                    path: &path,
+                    seconds: started.elapsed().as_secs_f64(),
+                    chunks: units.saturating_sub(1),
+                    lines: raw.iter().filter(|byte| **byte == b'\n').count() + 1,
+                    bytes: raw.len(),
+                },
+            ));
+        }
         (EntryKind::Bytecode, bundle)
     } else {
         (EntryKind::Asset, raw)
     };
-    PackedFile::pack(path.as_str(), kind, data, COMPRESSION_LEVEL)
-        .with_context(|| format!("failed to compress {path}"))
+    let file = PackedFile::pack(path.as_str(), kind, data, COMPRESSION_LEVEL)
+        .with_context(|| format!("failed to compress {path}"))?;
+    Ok((file, capture))
 }
 
 fn write_package(package: PathBuf, files: Vec<PackedFile>, manifest: &str) -> Result<BuildReport> {

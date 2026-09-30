@@ -105,7 +105,7 @@ See [Execution modes](#execution-modes).
 
 | Name | Value | Meaning |
 | --- | --- | --- |
-| `LUV_API_VERSION` | 2 | The version of `LuvApi`. Compare it with `api->version`. |
+| `LUV_API_VERSION` | 3 | The version of `LuvApi`. Compare it with `api->version`. Version 3 added the [hooks](#hooks). |
 | `LUV_RENDER_VERSION` | 1 | The version of `LuvRenderContext`. Compare it with `context->version`. |
 
 ## Classes
@@ -616,13 +616,14 @@ static void countdown(LuvCall* call) {
 
 ### The game thread
 
-Luau runs on one thread. The functions in [The engine](#the-engine), [Members](#members) and [Timed work](#timed-work) need that thread, because they read and write Luau values.
+Luau runs on one thread. The functions in [The engine](#the-engine), [Members](#members), [Timed work](#timed-work) and [Hooks](#hooks) need that thread, because they read and write Luau values.
 
 They work in:
 
 - A function, method, property or operator with `LUV_INLINE`.
 - A signal handler or function value made with `LUV_INLINE`.
 - A task from `schedule` with `LUV_INLINE`.
+- A hook with `LUV_INLINE`.
 
 They do not work in a `LUV_WORKER` or `LUV_PARALLEL` call, in a render hook or on a thread of your own. There they fail the call with `read_member needs the game thread, register it with LUV_INLINE` and return `LUV_OFF_THREAD` or NULL. Use `on_game_thread` to check first, or use [From any thread](#from-any-thread) instead.
 
@@ -633,7 +634,7 @@ These functions call back into Luau. Keep them short. A long one holds up every 
 | Function | Returns | Description |
 | --- | --- | --- |
 | `on_game_thread(call)` | `int32_t` | 1 when this call runs on the thread that runs Luau, 0 when it does not. |
-| `call_data(call)` | `void*` | The `data` pointer you gave to `new_function`, `connect` or `schedule`. NULL in every other call. |
+| `call_data(call)` | `void*` | The `data` pointer you gave to `new_function`, `connect`, `schedule` or a [hook](#hooks). NULL in every other call. |
 | `arg_value(call, index, out)` | `int32_t` | Writes the argument at `index` into `out`. Returns `LUV_OK`, or `LUV_OUT_OF_RANGE` with a kind of `LUV_KIND_NONE`. Works from any thread. |
 | `push_value(call, value)` | nothing | Pushes a `LuvValue` as a result. NULL pushes `nil`. Works from any thread. |
 | `push_buffer(call, length)` | `void*` | Pushes a Luau `buffer` of `length` bytes and returns memory to fill. The bytes start at zero. The memory lives until your function returns. Returns NULL when the length does not fit. Works from any thread. |
@@ -753,6 +754,52 @@ static void beat(LuvCall* call) {
 
 static void start(LuvCall* call) {
     sim.task = api->schedule(call, "sim", beat, &sim, 1.0 / 60.0, LUV_INLINE);
+}
+```
+
+### Hooks
+
+A hook runs your function when something happens in the engine. Each one returns a `LuvTask*`, the same handle as `schedule`, and `cancel` removes it.
+
+| Function | Returns | Description |
+| --- | --- | --- |
+| `on_heartbeat(call, name, function, data, flags)` | `LuvTask*` | Runs `function` on every beat of [Process.Heartbeat](process.md#heartbeat). Argument 0 is the time in seconds since the last beat. |
+| `on_frame(call, window, name, function, data, flags)` | `LuvTask*` | Runs `function` on every [OnFrame](window.md#onframe) of `window`, a ref to a [Window](window.md). Argument 0 is the time in seconds since the last frame. |
+| `on_close(call, name, function, data, flags)` | `LuvTask*` | Runs `function` once when the game closes, together with the [BindToClose](process.md#bindtoclose) callbacks. It gets no arguments. |
+| `on_error(call, name, function, data, flags)` | `LuvTask*` | Runs `function` for every error that reaches [Exception.Raised](exception.md#raised). |
+
+The arguments of `on_error` are:
+
+| Index | Kind | What it is |
+| --- | --- | --- |
+| 0 | string | The message. |
+| 1 | string | The message followed by the stack, one call on each line. |
+| 2 | string | The script the error came from, or nil. |
+| 3 | number | The line it came from, or nil. |
+| 4 | string | The name of the thread it came from, like `main`. |
+
+All four need the game thread and return NULL when the call is not on it. `name` is used in error messages. `data` comes back from `call_data`. `flags` picks the [mode](#execution-modes), and only `LUV_INLINE` can reach the engine.
+
+A hook lives until you cancel it or the game ends. It does not keep the game running. A hook belongs to the thread whose Luau made it, so a library loaded in a [parallel thread](../manual/parallel.md) hooks that thread.
+
+```c
+static LuvTask* beats = NULL;
+
+static void beat(LuvCall* call) {
+    double delta = api->opt_number(call, 0, 0);
+    sim.time += delta;
+}
+
+static void start(LuvCall* call) {
+    beats = api->on_heartbeat(call, "sim", beat, &sim, LUV_INLINE);
+    api->push_boolean(call, beats != NULL);
+}
+
+static void stop(LuvCall* call) {
+    if (beats) {
+        api->cancel(beats);
+        beats = NULL;
+    }
 }
 ```
 

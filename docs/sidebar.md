@@ -37,6 +37,7 @@
 
 - [Type index](pages/reference/types.md)
 - [Globals](pages/reference/globals.md)
+- [global](pages/reference/global.md)
 - [task](pages/reference/task.md)
 - [promise](pages/reference/promise.md)
 - [switch](pages/reference/switch.md)
@@ -69,6 +70,9 @@
   - [Shader object](pages/reference/shader.md)
   - [ShaderCombo](pages/reference/shadercombo.md)
 - [Viewport](pages/reference/viewport.md)
+- [Exception](pages/reference/exception.md)
+- [Thread](pages/reference/thread.md)
+- [Registry](pages/reference/registry.md)
 - [Container](pages/reference/container.md)
   - [ContainerLibrary](pages/reference/containerlibrary.md)
 - [DLL](pages/reference/dll.md)

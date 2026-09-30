@@ -10,6 +10,10 @@ use anyhow::{Context, Result, anyhow, bail};
 use crate::project::{HEADER_FILE, Project};
 
 pub const NATIVE_DIR: &str = "native";
+pub const NATIVE_INTER_DIR: &str = "nativeInter";
+pub const EXPORT_DIR: &str = "export";
+pub const EMBEDDED_DIR: &str = ".natives";
+const INTER_OUTPUT: &str = "native-inter";
 const TARGET_DIR: &str = "native-target";
 const OBJECTS_DIR: &str = "native-objects";
 const SOURCE_EXTENSIONS: [&str; 4] = ["c", "cc", "cpp", "cxx"];
@@ -87,7 +91,11 @@ fn walk(directory: &Path, found: &mut Vec<PathBuf>) -> io::Result<()> {
 }
 
 pub fn discover(root: &Path) -> Result<Vec<Plugin>> {
-    let native = root.join(NATIVE_DIR);
+    discover_in(&root.join(NATIVE_DIR))
+}
+
+fn discover_in(native: &Path) -> Result<Vec<Plugin>> {
+    let native = native.to_path_buf();
     if !native.is_dir() {
         return Ok(Vec::new());
     }
@@ -257,21 +265,36 @@ fn compile_rust(directory: &Path, target: &Path) -> Result<PathBuf> {
 
 pub fn build(project: &Project) -> Result<Vec<Built>> {
     let game_natives = project.root.join(NATIVE_DIR);
-    let mut sources = vec![(None, project.root.clone(), vec![game_natives.clone()])];
+    let mut sources = vec![(None, game_natives.clone(), vec![game_natives.clone()])];
     for container in project.containers()? {
         let includes = vec![container.root.join(NATIVE_DIR), game_natives.clone()];
-        sources.push((Some(container.id()), container.root.clone(), includes));
+        sources.push((Some(container.id()), container.root.join(NATIVE_DIR), includes));
     }
+    build_plugins(project, sources, project.output_dir())
+}
+
+pub fn embedded_output(project: &Project) -> PathBuf {
+    project.output_dir().join(INTER_OUTPUT)
+}
+
+pub fn build_embedded(project: &Project) -> Result<Vec<Built>> {
+    let inter = project.root.join(NATIVE_INTER_DIR);
+    let includes = vec![inter.clone(), project.root.join(NATIVE_DIR)];
+    build_plugins(project, vec![(None, inter, includes)], embedded_output(project))
+}
+
+type Source = (Option<String>, PathBuf, Vec<PathBuf>);
+
+fn build_plugins(project: &Project, sources: Vec<Source>, output: PathBuf) -> Result<Vec<Built>> {
     let mut plugins = Vec::new();
-    for (owner, root, includes) in sources {
-        for plugin in discover(&root)? {
+    for (owner, directory, includes) in sources {
+        for plugin in discover_in(&directory)? {
             plugins.push((owner.clone(), includes.clone(), plugin));
         }
     }
     if plugins.is_empty() {
         return Ok(Vec::new());
     }
-    let output = project.output_dir();
     fs::create_dir_all(&output).with_context(|| format!("failed to create {}", output.display()))?;
     let header = project.root.join(HEADER_FILE);
     let mut built = Vec::new();
@@ -319,4 +342,24 @@ pub fn build(project: &Project) -> Result<Vec<Built>> {
         });
     }
     Ok(built)
+}
+
+pub fn export(project: &Project, target: &Path) -> Result<Vec<String>> {
+    let source = project.root.join(EXPORT_DIR);
+    if !source.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut files = Vec::new();
+    walk(&source, &mut files).with_context(|| format!("failed to read {}", source.display()))?;
+    let mut exported = Vec::new();
+    for file in files {
+        let relative = file.strip_prefix(&source).unwrap_or(&file);
+        let destination = target.join(relative);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        copy_if_changed(&file, &destination)?;
+        exported.push(relative.to_string_lossy().replace('\\', "/"));
+    }
+    Ok(exported)
 }

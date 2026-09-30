@@ -17,7 +17,7 @@ async fn messenger_is_imported_and_inherits_base_game_object() {
         assert(Messenger.Name == "Messenger")
 
         local ok, err = pcall(import, "Nope")
-        assert(not ok and string.find(tostring(err), "'Nope' cannot be imported, the available imports are Asset, Bulk, Container, Crypto, DLL, FS, Messenger, Net, Process, Random, Serde, Shader, Signal, Viewport, Window", 1, true))
+        assert(not ok and string.find(tostring(err), "'Nope' cannot be imported, the available imports are Asset, Bulk, Container, Crypto, DLL, Exception, FS, Messenger, Net, Process, Random, Registry, Serde, Shader, Signal, Thread, Viewport, Window", 1, true))
         done = true
         "#,
     )

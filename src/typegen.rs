@@ -5,12 +5,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use crate::plugins::NATIVE_DIR;
-use crate::project::{Project, TYPES_FILE, TYPES_TEMPLATE};
+use crate::project::{Project, SETTINGS_FILE, TYPES_FILE, TYPES_TEMPLATE};
 
 const MERGED: [&str; 2] = ["WindowAPIs", "Imports"];
 const SUFFIX: &str = ".d.luau";
 const DIRECTIVE: &str = "--!";
+const PACKAGES: &str = "_Index";
+pub const IGNORED_TYPES: &str = "**/*.d.luau";
+const IGNORE_SETTINGS: [&str; 2] = ["luau-lsp.ignoreGlobs", "luau-lsp.completion.imports.ignoreGlobs"];
 
 #[derive(Default)]
 pub struct TypeReport {
@@ -28,15 +30,21 @@ impl TypeReport {
     }
 }
 
-fn walk(directory: &Path, found: &mut Vec<PathBuf>) -> io::Result<()> {
+fn walk(directory: &Path, skipped: &[PathBuf], found: &mut Vec<PathBuf>) -> io::Result<()> {
     let mut entries: Vec<PathBuf> = fs::read_dir(directory)?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<io::Result<_>>()?;
     entries.sort();
     for path in entries {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
         if path.is_dir() {
-            walk(&path, found)?;
-        } else if path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.ends_with(SUFFIX)) {
+            if name.starts_with('.') || name == PACKAGES || skipped.contains(&path) {
+                continue;
+            }
+            walk(&path, skipped, found)?;
+        } else if name.ends_with(SUFFIX) && !name.eq_ignore_ascii_case(TYPES_FILE) {
             found.push(path);
         }
     }
@@ -50,15 +58,16 @@ fn label(root: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 
-fn gather(root: &Path, roots: &[PathBuf]) -> Result<Vec<(String, String)>> {
+fn gather(root: &Path, roots: &[PathBuf], skipped: &[PathBuf]) -> Result<Vec<(String, String)>> {
     let mut found = Vec::new();
+    let mut skipped = skipped.to_vec();
+    skipped.extend(roots.iter().filter(|base| *base != root).cloned());
     for base in roots {
-        let native = base.join(NATIVE_DIR);
-        if !native.is_dir() {
+        if !base.is_dir() {
             continue;
         }
         let mut files = Vec::new();
-        walk(&native, &mut files).with_context(|| format!("failed to read {}", native.display()))?;
+        walk(base, &skipped, &mut files).with_context(|| format!("failed to read {}", base.display()))?;
         for path in files {
             let text = fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
             found.push((label(root, &path), text));
@@ -96,11 +105,11 @@ fn split(text: &str) -> (String, Vec<(&'static str, Vec<String>)>) {
     (body, merges)
 }
 
-pub fn build(root: &Path, roots: &[PathBuf]) -> Result<(String, Vec<String>)> {
+pub fn build(root: &Path, roots: &[PathBuf], skipped: &[PathBuf]) -> Result<(String, Vec<String>)> {
     let mut extras: BTreeMap<&str, Vec<(String, Vec<String>)>> = BTreeMap::new();
     let mut bodies: Vec<(String, String)> = Vec::new();
     let mut sources = Vec::new();
-    for (label, text) in gather(root, roots)? {
+    for (label, text) in gather(root, roots, skipped)? {
         let (body, merges) = split(&text);
         for (name, fields) in merges {
             extras.entry(name).or_default().push((label.clone(), fields));
@@ -152,11 +161,37 @@ pub fn roots(project: &Project) -> Vec<PathBuf> {
 }
 
 pub fn generate(project: &Project) -> Result<(String, Vec<String>)> {
-    build(&project.root, &roots(project))
+    build(&project.root, &roots(project), &[project.output_dir()])
+}
+
+fn ignore_types(project: &Project) {
+    let path = project.root.join(SETTINGS_FILE);
+    let Ok(text) = fs::read_to_string(&path) else { return };
+    let Ok(serde_json::Value::Object(mut settings)) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return;
+    };
+    let mut changed = false;
+    for key in IGNORE_SETTINGS {
+        let entry = settings
+            .entry(key)
+            .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+        let serde_json::Value::Array(globs) = entry else { continue };
+        if !globs.iter().any(|glob| glob.as_str() == Some(IGNORED_TYPES)) {
+            globs.push(serde_json::Value::String(IGNORED_TYPES.to_owned()));
+            changed = true;
+        }
+    }
+    if changed && let Ok(mut updated) = serde_json::to_string_pretty(&serde_json::Value::Object(settings)) {
+        updated.push('\n');
+        let _ = fs::write(&path, updated);
+    }
 }
 
 pub fn sync(project: &Project) -> Result<TypeReport> {
     let (text, sources) = generate(project)?;
+    if !sources.is_empty() {
+        ignore_types(project);
+    }
     let path = project.root.join(TYPES_FILE);
     if fs::read(&path).is_ok_and(|current| current == text.as_bytes()) {
         return Ok(TypeReport { sources, changed: false });

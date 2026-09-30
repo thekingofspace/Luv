@@ -23,8 +23,12 @@ luv has no `wait` or `warn` globals. To wait for time, use [task.wait](task.md#w
 | [task](#task) | table | Starts coroutines and waits for time. |
 | [promise](#promise) | table | Holds work that is not done yet. |
 | [switch](#switch) | table | Picks a function by name. |
-| [EnterParallel](#enterparallel) | function | Starts a parallel block. |
-| [ExitParallel](#exitparallel) | function | Ends a parallel block. |
+| [global](#global) | table | Adds your own globals, imports and window APIs. |
+| [epcall](#epcall) | function | `pcall` that also reports the error. |
+| [ecall](#ecall) | function | Loads a mod from outside the game. |
+| [SetGlobal](#setglobal) | function | Deprecated. Use [global.new](global.md#new). |
+| [EnterParallel](#enterparallel) | function | Deprecated. Use `task.desynchronize()`. |
+| [ExitParallel](#exitparallel) | function | Deprecated. Use `task.synchronize()`. |
 | [coroutine.resume](#coroutine-resume) | function | Resumes a coroutine. luv changes it. |
 | [coroutine.wrap](#coroutine-wrap) | function | Wraps a function in a coroutine. luv changes it. |
 
@@ -53,14 +57,17 @@ print(Process.gameName, changed.ClassName)
 | [Container](container.md) | Finds and loads containers. |
 | [Crypto](crypto.md) | Hashing, encryption, signing and random bytes. |
 | [DLL](dll.md) | Loads native libraries and calls their functions. |
+| [Exception](exception.md) | Finds every error and shows where it came from. |
 | [FS](fs.md) | Reads and writes files and folders. |
 | [Messenger](messenger.md) | The Messenger object. It sends messages between threads. |
 | [Net](net.md) | HTTP, TCP, UDP and WebSockets. |
 | [Process](process.md) | The heartbeat, closing, exit, arguments and child processes. |
 | [Random](random.md) | Random number generators with a seed. |
+| [Registry](registry.md) | Keeps named values that can be shared between threads. |
 | [Serde](serde.md) | Encodes and decodes JSON, TOML and YAML. |
 | [Shader](shader-library.md) | Compiles shaders. |
 | [Signal](signal.md) | Makes new signals. |
+| [Thread](thread.md) | Finds threads and talks to one of them. |
 | [Viewport](viewport.md) | Information about the screens. |
 | [Window](window.md) | Opens windows. |
 
@@ -73,10 +80,10 @@ Each parallel block has its own copy of every library. You can use a library ins
 An unknown name raises an error that lists every name:
 
 ```text
-'Physics' cannot be imported, the available imports are Asset, Bulk, Container, Crypto, DLL, FS, Messenger, Net, Process, Random, Serde, Shader, Signal, Viewport, Window
+'Physics' cannot be imported, the available imports are Asset, Bulk, Container, Crypto, DLL, Exception, FS, Messenger, Net, Process, Random, Registry, Serde, Shader, Signal, Thread, Viewport, Window
 ```
 
-A native plugin can add a name of its own, called a service. It joins the list when [DLL.Load](dll.md#load) finishes, so load the library first. See [Services](native-c.md#services).
+A native plugin can add a name of its own, called a service. It joins the list when [DLL.Load](dll.md#load) finishes, so load the library first. See [Services](native-c.md#services). A script can add one with [global.newImport](global.md#newimport).
 
 ### ecall
 
@@ -100,11 +107,42 @@ Because the folder is mounted, a mod can `require` its own scripts with `@self`,
 
 Call it with the same path twice and both handles share one value, so a mod is only ever run once until you drop it. [Drop](externalmodule.md#drop) forgets that value, and it is worth reading [Dropping is not unloading](externalmodule.md#dropping-is-not-unloading) first, because anything already holding the mod keeps it.
 
+### global
+
+```luau
+global.new("Version", "1.4")
+```
+
+A read only table with [global.new](global.md#new), [global.newImport](global.md#newimport) and [global.newAPI](global.md#newapi). See [global](global.md).
+
+### epcall
+
+```luau
+epcall(body: (...any) -> ...any, ...: any): (boolean, ...any)
+```
+
+The same as `pcall`. It runs `body` with the values after it, returns `true` and the results when it works, and `false` and the error when it fails. The error value is handed back untouched.
+
+What it adds is a report. When `body` fails, the error also reaches [Exception.Raised](exception.md#raised), with the stack from the moment it happened and `Caught` set to `true`. So you can handle an error right where it happens and still see it in one place.
+
+```luau
+local ok, problem = epcall(function()
+	return loadSave()
+end)
+if not ok then
+	showSaveMenu()
+end
+```
+
+`body` can wait for things, the same as with `pcall`. A plain `pcall` stays silent.
+
 ### SetGlobal
 
 ```luau
 SetGlobal(name: string, value: any)
 ```
+
+Deprecated. Use [global.new](global.md#new), which does the same and sits beside `global.newImport` and `global.newAPI`. `SetGlobal` still works, and your editor marks it and suggests the new name.
 
 Puts a value in the globals of Luau, where every script can read it by name. Use it to hand mods the functions and values of your game.
 
@@ -124,7 +162,7 @@ print(modApi.version)
 modApi.spawn("hat")
 ```
 
-The names luv owns cannot be replaced. `SetGlobal("import", ...)` errors with `'import' belongs to luv and cannot be replaced`. Those names are `ecall`, `import`, `require`, `enum`, `udim`, `color`, `SetGlobal` and `_G`.
+The names luv owns cannot be replaced. `SetGlobal("import", ...)` errors with `'import' belongs to luv and cannot be replaced`. The full list is on [global.new](global.md#new).
 
 Each parallel block has its own globals, so a value set on the main thread is not there. Send it with [Messenger](messenger.md) or set it again inside the block.
 
@@ -187,7 +225,7 @@ task.wait(1)
 task.spawn(print, "on a coroutine")
 ```
 
-A read only table with [task.wait](task.md#wait), [task.spawn](task.md#spawn), [task.defer](task.md#defer), [task.delay](task.md#delay), [task.create](task.md#create) and [task.count](task.md#count). See [task](task.md).
+A read only table with [task.wait](task.md#wait), [task.spawn](task.md#spawn), [task.defer](task.md#defer), [task.delay](task.md#delay), [task.create](task.md#create), [task.count](task.md#count), [task.parallel](task.md#parallel), [task.desynchronize](task.md#desynchronize) and [task.synchronize](task.md#synchronize). See [task](task.md).
 
 ### promise
 
@@ -216,6 +254,8 @@ A read only table with [switch.new](switch.md#new). See [switch](switch.md).
 EnterParallel()
 ```
 
+Deprecated. Use `task.desynchronize()`, which does exactly the same and matches the naming of the task library. `EnterParallel` still works, and your editor marks it.
+
 Marks the start of a parallel block. Each time the script reaches it, the code up to the matching `ExitParallel()` runs on a new thread. The script goes on without waiting. It must be a statement of its own, with no arguments. See [Parallel code](../manual/parallel.md).
 
 ### ExitParallel
@@ -224,18 +264,20 @@ Marks the start of a parallel block. Each time the script reaches it, the code u
 ExitParallel()
 ```
 
+Deprecated. Use `task.synchronize()`, which does exactly the same.
+
 Marks the end of a parallel block. It must be in the same block of code as its `EnterParallel()`.
 
 ```luau
 local Messenger = import("Messenger")
 
-EnterParallel()
+task.desynchronize()
 local total = 0
 for index = 1, 1000000 do
 	total += index
 end
 Messenger:Fire("Total", total)
-ExitParallel()
+task.synchronize()
 ```
 
 ### coroutine.resume

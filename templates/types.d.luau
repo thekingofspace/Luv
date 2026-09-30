@@ -646,6 +646,89 @@ export type Signal<T... = ...any> = BaseGameObject & {
 	Invoke: (self: Signal<T...>, id: string, T...) -> ...any,
 	Fire: (self: Signal<T...>, T...) -> (),
 	Wait: (self: Signal<T...>) -> T...,
+	BindParallel: (self: Signal<T...>, id: string, handler: (T...) -> ...any) -> Thread,
+}
+
+export type StackFrame = {
+	Source: string,
+	Line: number?,
+	Name: string?,
+	IsNative: boolean,
+}
+
+export type Exception = {
+	Message: string,
+	Value: any,
+	Source: string?,
+	Line: number?,
+	Stack: { StackFrame },
+	Traceback: string,
+	Thread: string,
+	Caught: boolean,
+	Time: number,
+}
+
+export type Exception_API = {
+	Raised: Signal<Exception>,
+	Count: number,
+	Traceback: (message: any?, level: number?) -> string,
+	GetStack: (level: number?) -> { StackFrame },
+	Caller: (level: number?) -> StackFrame?,
+	Try: (body: (...any) -> ...any, ...any) -> (boolean, ...any),
+	GetRecent: () -> { Exception },
+	ClearRecent: () -> (),
+}
+
+export type Thread = {
+	ClassName: string,
+	Id: number,
+	Name: string?,
+	State: string?,
+	Data: any,
+	IsMain: boolean,
+	IsReady: boolean,
+	IsAlive: boolean,
+	IsCurrent: boolean,
+	Send: (self: Thread, topic: string, ...any) -> boolean,
+	MarkReady: (self: Thread) -> boolean,
+	WaitReady: (self: Thread, timeout: number?) -> boolean,
+}
+
+export type Thread_API = {
+	Running: () -> Thread,
+	Get: (state: string?) -> { Thread },
+	Set: (state: string?, data: any?) -> (),
+	WaitFor: (state: string, timeout: number?) -> Thread?,
+}
+
+export type Registry = {
+	ClassName: string,
+	Name: string,
+	IsSafe: boolean,
+	Count: number,
+	Staged: number,
+	Changed: Signal<string, any>,
+	Register: (self: Registry, id: string, value: any) -> (),
+	Stage: (self: Registry, id: string, value: any) -> (),
+	Commit: (self: Registry) -> number,
+	Discard: (self: Registry) -> number,
+	Get: (self: Registry, id: string) -> any,
+	Has: (self: Registry, id: string) -> boolean,
+	Remove: (self: Registry, id: string) -> boolean,
+	List: (self: Registry, prefix: string?) -> { string },
+	GetAll: (self: Registry, prefix: string?) -> { [string]: any },
+	Clear: (self: Registry) -> number,
+}
+
+export type Registry_API = {
+	new: (name: string) -> Registry,
+	Safe: (name: string) -> Registry,
+}
+
+export type Global_API = {
+	new: (name: string, value: any) -> (),
+	newImport: (name: string, value: any) -> (),
+	newAPI: (name: string, api: { [string]: any }) -> (),
 }
 
 export type Messenger = BaseGameObject & {
@@ -2002,14 +2085,17 @@ export type Imports = {
 	Container: Container_API,
 	Crypto: Crypto_API,
 	DLL: DLL_API,
+	Exception: Exception_API,
 	FS: FS_API,
 	Messenger: Messenger_API,
 	Net: Net_API,
 	Process: Process_API,
 	Random: Random_API,
+	Registry: Registry_API,
 	Serde: Serde_API,
 	Shader: Shader_API,
 	Signal: Signal_API,
+	Thread: Thread_API,
 	Viewport: Viewport_API,
 	Window: Window_API,
 }
@@ -2071,10 +2157,20 @@ export type Task_API = {
 	delay: (seconds: number, target: ((...any) -> ...any) | thread, ...any) -> thread,
 	create: (body: (...any) -> ...any, exclusive: boolean?) -> Task,
 	count: () -> number,
+	parallel: (body: (...any) -> ...any, ...any) -> Thread,
+	desynchronize: () -> (),
+	synchronize: () -> (),
 }
 
 declare import: <K>(name: keyof<Imports> & K) -> index<Imports, K>
 declare function ecall(path: string): ExternalModule
+declare function epcall<A..., R...>(body: (A...) -> R..., ...: A...): (boolean, R...)
+declare global: Global_API
+
+@[deprecated {
+	use = "global.new()",
+	reason = "global.new supports every kind of value and sits beside newImport and newAPI.",
+}]
 declare function SetGlobal(name: string, value: any): ()
 
 declare promise: Promise_API
@@ -2085,5 +2181,14 @@ declare enum: Enums
 declare udim: UDim_API
 declare color: Color_API
 
+@[deprecated {
+	use = "task.desynchronize()",
+	reason = "task.desynchronize matches the naming of the task library.",
+}]
 declare function EnterParallel(): ()
+
+@[deprecated {
+	use = "task.synchronize()",
+	reason = "task.synchronize matches the naming of the task library.",
+}]
 declare function ExitParallel(): ()

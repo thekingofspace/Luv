@@ -80,7 +80,7 @@ impl LuvRenderContext {
     }
 }
 
-pub const LUV_API_VERSION: u32 = 2;
+pub const LUV_API_VERSION: u32 = 3;
 
 pub const LUV_WORKER: u32 = 0;
 pub const LUV_INLINE: u32 = 1;
@@ -352,6 +352,11 @@ pub struct LuvApi {
     pub schedule: unsafe extern "C" fn(*mut LuvCall, *const c_char, LuvFunction, *mut c_void, f64, u32) -> *mut LuvTask,
     pub cancel: unsafe extern "C" fn(*mut LuvTask),
     pub push_asset: unsafe extern "C" fn(*mut LuvCall, *const c_char, *const c_void, u64) -> i32,
+    pub on_heartbeat: unsafe extern "C" fn(*mut LuvCall, *const c_char, LuvFunction, *mut c_void, u32) -> *mut LuvTask,
+    pub on_frame:
+        unsafe extern "C" fn(*mut LuvCall, *mut LuvRef, *const c_char, LuvFunction, *mut c_void, u32) -> *mut LuvTask,
+    pub on_close: unsafe extern "C" fn(*mut LuvCall, *const c_char, LuvFunction, *mut c_void, u32) -> *mut LuvTask,
+    pub on_error: unsafe extern "C" fn(*mut LuvCall, *const c_char, LuvFunction, *mut c_void, u32) -> *mut LuvTask,
 }
 
 impl LuvApi {

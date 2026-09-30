@@ -58,7 +58,7 @@ struct LuvRenderContext {
 
 typedef void (*LuvRenderHook)(LuvRenderContext* context);
 
-#define LUV_API_VERSION 2
+#define LUV_API_VERSION 3
 
 #define LUV_WORKER 0
 #define LUV_INLINE 1
@@ -186,6 +186,10 @@ typedef struct LuvApi {
     LuvTask* (*schedule)(LuvCall* call, const char* name, LuvFunction function, void* data, double seconds, uint32_t flags);
     void (*cancel)(LuvTask* task);
     int32_t (*push_asset)(LuvCall* call, const char* name, const void* data, uint64_t length);
+    LuvTask* (*on_heartbeat)(LuvCall* call, const char* name, LuvFunction function, void* data, uint32_t flags);
+    LuvTask* (*on_frame)(LuvCall* call, LuvRef* window, const char* name, LuvFunction function, void* data, uint32_t flags);
+    LuvTask* (*on_close)(LuvCall* call, const char* name, LuvFunction function, void* data, uint32_t flags);
+    LuvTask* (*on_error)(LuvCall* call, const char* name, LuvFunction function, void* data, uint32_t flags);
 } LuvApi;
 
 static inline LuvValue luv_nil(void) {

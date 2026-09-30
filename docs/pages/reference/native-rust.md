@@ -82,7 +82,7 @@ Function pointers that can be NULL are `Option` fields in Rust:
 | `LuvClassInfo` | `destroy` | `Option<LuvDestroy>` |
 | `LuvVulkan` | `get_instance_proc_addr` | `Option<LuvGetInstanceProcAddr>` |
 
-The `LuvApi` fields that take a function, which are `new_function`, `connect` and `schedule`, take a plain `LuvFunction` in Rust. They cannot be NULL.
+The `LuvApi` fields that take a function, which are `new_function`, `connect`, `schedule`, `on_heartbeat`, `on_frame`, `on_close` and `on_error`, take a plain `LuvFunction` in Rust. They cannot be NULL.
 
 Everything else matches `luv.h`:
 

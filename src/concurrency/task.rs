@@ -182,5 +182,14 @@ pub fn install(lua: &Lua) -> Result<()> {
         "count",
         lua.create_function(|lua, ()| Ok(Scheduler::get(lua)?.driving()))?,
     )?;
+    library.set(
+        "parallel",
+        lua.create_function(|lua, (target, args): (Value, MultiValue)| {
+            super::parallel::spawn_once(lua, &target, args)
+        })?,
+    )?;
+    let marker = lua.create_function(|_, ()| Ok(()))?;
+    library.set("desynchronize", marker.clone())?;
+    library.set("synchronize", marker)?;
     lua.globals().set("task", library)
 }

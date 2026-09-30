@@ -6,9 +6,9 @@ pub(crate) mod imports;
 mod require;
 mod scheduler;
 
-pub use bus::{Bus, Mailbox, Message, Packet, Payload, decode, encode, encode_value};
+pub use bus::{Bus, Mailbox, Message, Packet, Payload, decode, decode_value, encode, encode_value};
 pub use containers::{Containers, LoadedContainer};
-pub use engine::{AssetCache, Engine, EngineBuilder, WeakCache};
+pub use engine::{AssetCache, BootScripts, Engine, EngineBuilder, Launch, ThreadEntry, Threads, WeakCache};
 pub use require::{VfsRequirer, module_of};
 pub use scheduler::{Activity, Scheduler, Tracker, Wait, Waiter};
 pub(crate) use require::CONFIG_FILES;
@@ -17,7 +17,7 @@ use std::cell::RefCell;
 use std::io::Write;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mlua::chunk::{ChunkMode, Compiler};
 use mlua::{AnyUserData, Function, IntoLuaMulti, Lua, LuaOptions, LuaString, MultiValue, Result, StdLib, Value};
@@ -62,22 +62,42 @@ pub fn load_unit(lua: &Lua, vfs: &dyn Vfs, path: &str, unit: usize) -> Result<Fu
     let data = vfs.read(path).map_err(mlua::Error::external)?;
     let mode = vfs.chunk_mode(path);
     let missing = || mlua::Error::runtime(format!("{path} does not contain parallel block #{unit}"));
+    let capture = (mode == ChunkMode::Text && unit == 0)
+        .then(|| script::headers(&data).capture)
+        .flatten();
+    let started = Instant::now();
+    let mut chunks = 0;
     let code = match mode {
         ChunkMode::Binary => script::bundle_unit(&data, unit).ok_or_else(missing)?.to_vec(),
-        ChunkMode::Text => script::units(&data)
-            .map_err(|error| mlua::Error::SyntaxError {
+        ChunkMode::Text => {
+            let units = script::units(&data).map_err(|error| mlua::Error::SyntaxError {
                 message: format!("{path}:{error}"),
                 incomplete_input: false,
-            })?
-            .into_iter()
-            .nth(unit)
-            .ok_or_else(missing)?,
+            })?;
+            chunks = units.len().saturating_sub(1);
+            units.into_iter().nth(unit).ok_or_else(missing)?
+        }
     };
-    lua.load(code)
+    let function = lua
+        .load(code)
         .set_name(format!("@{path}"))
         .set_mode(mode)
         .set_compiler(compiler())
-        .into_function()
+        .into_function()?;
+    if let Some(message) = capture {
+        let line = script::capture_line(
+            message.as_deref(),
+            &script::Compiled {
+                path,
+                seconds: started.elapsed().as_secs_f64(),
+                chunks,
+                lines: data.iter().filter(|byte| **byte == b'\n').count() + 1,
+                bytes: data.len(),
+            },
+        );
+        let _ = writeln!(std::io::stdout().lock(), "{line}");
+    }
+    Ok(function)
 }
 
 pub fn import(lua: &Lua, name: &str) -> Result<Value> {
@@ -85,6 +105,35 @@ pub fn import(lua: &Lua, name: &str) -> Result<Value> {
 }
 
 pub const CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CurrentThread(pub u64);
+
+#[derive(Default)]
+struct BoundHandler(RefCell<Option<Function>>);
+
+fn spawn_scripts(lua: &Lua, scripts: &[String]) -> Result<()> {
+    let engine = lua
+        .app_data_ref::<Arc<Engine>>()
+        .map(|engine| engine.clone())
+        .ok_or_else(|| mlua::Error::runtime("the luv engine is not running"))?;
+    let scheduler = Scheduler::get(lua)?;
+    for path in scripts {
+        match load_unit(lua, engine.vfs().as_ref(), path, 0) {
+            Ok(function) => scheduler.spawn(lua, function, ()),
+            Err(error) => scheduler.report(error),
+        }
+    }
+    Ok(())
+}
+
+pub fn boot_ready(lua: &Lua) -> Result<()> {
+    let scripts = match lua.app_data_ref::<Arc<Engine>>() {
+        Some(engine) => engine.boot().boot_ready.clone(),
+        None => return Ok(()),
+    };
+    spawn_scripts(lua, &scripts)
+}
 
 #[derive(Default)]
 pub struct CloseCallbacks(RefCell<Vec<Function>>);
@@ -134,6 +183,7 @@ impl Runtime {
         raise_timer_resolution();
         let lua = Lua::new_with(StdLib::ALL_SAFE, LuaOptions::new().thread_pool_size(THREAD_POOL))?;
 
+        let thread_label = label.clone();
         let reporter = {
             let engine = engine.clone();
             move |error: mlua::Error| match &label {
@@ -165,13 +215,16 @@ impl Runtime {
                 Ok(())
             })?,
         )?;
-        let requirer = VfsRequirer::new(engine.vfs().clone()).with_containers(engine.containers().clone());
+        let requirer = VfsRequirer::new(engine.vfs().clone())
+            .with_containers(engine.containers().clone())
+            .with_engine(engine.clone());
         globals.set("require", lua.create_require_function(requirer)?)?;
         let marker = lua.create_function(|_, ()| Ok(()))?;
         globals.set(ENTER, marker.clone())?;
         globals.set(EXIT, marker)?;
         globals.set(HOOK, lua.create_function(parallel_hook)?)?;
         scheduler::install_coroutine_library(&lua)?;
+        api::exception::install(&lua, &engine, &scheduler, thread_label.as_deref())?;
         datatypes::install(&lua)?;
         crate::concurrency::install(&lua)?;
         crate::objects::external::install(&lua)?;
@@ -212,10 +265,27 @@ impl Runtime {
         let containers = self.engine.containers().clone();
         let _ = tokio::task::spawn_blocking(move || containers.refresh()).await;
         let mailbox = self.engine.bus().open();
+        self.engine.set_main_mailbox(mailbox.id);
+        self.engine.threads().add(mailbox.id, "main".to_owned(), true);
+        self.engine.protect(entry);
+        self.lua.set_app_data(CurrentThread(mailbox.id));
         LocalSet::new()
             .run_until(async {
                 self.beat();
                 self.scheduler.tracker().enter();
+                self.boot();
+                let boot = self.engine.boot().clone();
+                for path in &boot.start_async {
+                    let launched =
+                        self.engine
+                            .spawn_thread(path.clone(), path.clone(), 0, Payload::from(Vec::new()), Launch::Block);
+                    if let Err(error) = launched {
+                        self.scheduler.report(mlua::Error::runtime(format!("could not start {path}: {error}")));
+                    }
+                }
+                if let Err(error) = spawn_scripts(&self.lua, &boot.start) {
+                    self.scheduler.report(error);
+                }
                 self.start(entry, 0, MultiValue::new());
                 self.drive(mailbox, false).await;
             })
@@ -225,17 +295,71 @@ impl Runtime {
         let _ = tokio::task::spawn_blocking(move || engine.clear_temp()).await;
     }
 
-    pub(crate) async fn run_cluster(&self, mailbox: Mailbox, path: &str, unit: usize, captures: &[Packet]) {
+    pub(crate) async fn run_cluster(
+        &self,
+        mailbox: Mailbox,
+        path: &str,
+        unit: usize,
+        captures: &[Packet],
+        launch: Launch,
+    ) {
+        self.lua.set_app_data(CurrentThread(mailbox.id));
         self.beat();
         self.scheduler.tracker().adopt();
-        match decode(&self.lua, captures) {
-            Ok(captures) => self.start(path, unit, captures),
-            Err(error) => {
-                self.scheduler.report(error);
-                self.scheduler.tracker().exit();
+        self.boot();
+        let started = decode(&self.lua, captures).and_then(|captures| match launch {
+            Launch::Block => {
+                self.start(path, unit, captures);
+                Ok(())
             }
+            Launch::Once(args) => {
+                let function = self.function(path, unit, captures)?;
+                let args = decode(&self.lua, &args)?;
+                self.scheduler.spawn_entered(&self.lua, function, args);
+                Ok(())
+            }
+            Launch::Bound => {
+                let function = self.function(path, unit, captures)?;
+                self.lua.set_app_data(BoundHandler(RefCell::new(Some(function))));
+                self.scheduler.tracker().exit();
+                Ok(())
+            }
+        });
+        if let Err(error) = started {
+            self.scheduler.report(error);
+            self.scheduler.tracker().exit();
         }
         self.drive(mailbox, true).await;
+    }
+
+    fn boot(&self) {
+        let scripts = self.engine.boot().boot.clone();
+        if let Err(error) = spawn_scripts(&self.lua, &scripts) {
+            self.scheduler.report(error);
+        }
+    }
+
+    fn function(&self, path: &str, unit: usize, captures: MultiValue) -> Result<Function> {
+        let chunk = load_unit(&self.lua, self.engine.vfs().as_ref(), path, unit)?;
+        match chunk.call::<Value>(captures)? {
+            Value::Function(function) => Ok(function),
+            other => Err(mlua::Error::runtime(format!(
+                "{path} unit #{unit} gave a {} instead of a function",
+                other.type_name()
+            ))),
+        }
+    }
+
+    fn call_bound(&self, payload: &[Packet]) -> Result<()> {
+        let function = self
+            .lua
+            .app_data_ref::<BoundHandler>()
+            .and_then(|bound| bound.0.borrow().clone());
+        if let Some(function) = function {
+            let args = decode(&self.lua, payload)?;
+            self.scheduler.spawn(&self.lua, function, args);
+        }
+        Ok(())
     }
 
     fn start(&self, path: &str, unit: usize, args: impl IntoLuaMulti) {
@@ -282,7 +406,11 @@ impl Runtime {
             .lua
             .app_data_ref::<CloseCallbacks>()
             .is_some_and(|callbacks| !callbacks.is_empty());
-        messages || closing
+        let bound = self
+            .lua
+            .app_data_ref::<BoundHandler>()
+            .is_some_and(|bound| bound.0.borrow().is_some());
+        messages || closing || bound
     }
 
     fn run_close_callbacks(&self) {
@@ -350,6 +478,29 @@ impl Runtime {
                     activity.exit();
                     tokio::task::yield_now().await;
                 }
+                Tick::Message(Some(Message::Exception(packet))) => {
+                    crate::api::exception::receive(&self.lua, &packet);
+                    activity.exit();
+                }
+                Tick::Message(Some(Message::Call(payload))) => {
+                    if let Err(error) = self.call_bound(&payload) {
+                        self.scheduler.report(error);
+                    }
+                    activity.exit();
+                    tokio::task::yield_now().await;
+                }
+                Tick::Message(Some(Message::Registry { name, id })) => {
+                    if let Err(error) = crate::api::registry::changed_elsewhere(&self.lua, &name, &id) {
+                        self.scheduler.report(error);
+                    }
+                    activity.exit();
+                }
+                Tick::Message(Some(Message::Stop)) => {
+                    if let Some(bound) = self.lua.app_data_ref::<BoundHandler>() {
+                        bound.0.borrow_mut().take();
+                    }
+                    activity.exit();
+                }
                 Tick::Message(Some(Message::Close)) => {
                     self.run_close_callbacks();
                     activity.closing_exit();
@@ -362,10 +513,15 @@ impl Runtime {
         }
 
         self.engine.bus().close(mailbox.id);
+        self.engine.threads().remove(mailbox.id);
         mailbox.receiver.close();
         while let Ok(message) = mailbox.receiver.try_recv() {
             match message {
-                Message::Topic { .. } => activity.exit(),
+                Message::Topic { .. }
+                | Message::Exception(_)
+                | Message::Call(_)
+                | Message::Stop
+                | Message::Registry { .. } => activity.exit(),
                 Message::Close => activity.closing_exit(),
             }
         }

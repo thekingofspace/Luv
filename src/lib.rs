@@ -12,6 +12,7 @@ pub mod native;
 pub mod objects;
 pub mod packager;
 pub mod plugins;
+pub mod progress;
 pub mod project;
 pub mod runtime;
 pub mod script;

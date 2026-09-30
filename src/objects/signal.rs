@@ -1,9 +1,23 @@
 use std::mem;
+use std::sync::Arc;
 
-use mlua::{AnyUserData, Function, Lua, MultiValue, Result, UserData, UserDataFields, UserDataMethods};
+use mlua::{AnyUserData, Function, Lua, MultiValue, Result, UserData, UserDataFields, UserDataMethods, Value};
 
 use super::{BaseGameObject, GameObject};
-use crate::runtime::{Scheduler, Tracker, Waiter};
+use crate::api::thread::ThreadHandle;
+use crate::concurrency::parallel;
+use crate::runtime::{Engine, Launch, Message, Scheduler, Tracker, Waiter, encode};
+
+struct Worker {
+    id: u64,
+    engine: Arc<Engine>,
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        self.engine.bus().send_to(self.id, Message::Stop);
+    }
+}
 
 struct KeepAlive {
     tracker: Tracker,
@@ -13,6 +27,7 @@ struct KeepAlive {
 pub struct Signal {
     base: BaseGameObject,
     handlers: Vec<(String, Function)>,
+    parallel: Vec<(String, Worker)>,
     waiters: Vec<Waiter>,
     keep_alive: Option<KeepAlive>,
 }
@@ -24,6 +39,7 @@ impl Signal {
         Self {
             base: BaseGameObject::new(Self::CLASS_NAME),
             handlers: Vec::new(),
+            parallel: Vec::new(),
             waiters: Vec::new(),
             keep_alive: None,
         }
@@ -41,7 +57,8 @@ impl Signal {
     }
 
     pub fn is_listened(&self) -> bool {
-        !self.base.is_destroyed() && (!self.handlers.is_empty() || !self.waiters.is_empty())
+        !self.base.is_destroyed()
+            && (!self.handlers.is_empty() || !self.waiters.is_empty() || !self.parallel.is_empty())
     }
 
     fn refresh(&mut self) {
@@ -80,7 +97,47 @@ impl Signal {
     }
 
     pub fn is_bound(&self, id: &str) -> bool {
-        self.handlers.iter().any(|(bound, _)| bound == id)
+        self.handlers.iter().any(|(bound, _)| bound == id) || self.parallel.iter().any(|(bound, _)| bound == id)
+    }
+
+    fn unbind_any(&mut self, id: &str) -> bool {
+        if self.unbind(id).is_some() {
+            return true;
+        }
+        let Some(index) = self.parallel.iter().position(|(bound, _)| bound == id) else {
+            return false;
+        };
+        self.parallel.remove(index);
+        self.refresh();
+        true
+    }
+
+    pub fn bind_parallel(lua: &Lua, signal: &AnyUserData, id: String, target: Value) -> Result<ThreadHandle> {
+        let function = parallel::expect(
+            &target,
+            "BindParallel",
+            "signal:BindParallel(\"id\", function(...) end)",
+        )?;
+        let label = {
+            let this = signal.borrow::<Signal>()?;
+            this.base.ensure_alive()?;
+            if this.is_bound(&id) {
+                return Err(mlua::Error::runtime(format!(
+                    "handler '{id}' is already bound to {}, call UnBind(\"{id}\") before binding it again",
+                    this.base.name()
+                )));
+            }
+            format!("BindParallel '{id}' on {} at {}", this.base.name(), function.place())
+        };
+        let engine = lua
+            .app_data_ref::<Arc<Engine>>()
+            .map(|engine| engine.clone())
+            .ok_or_else(|| mlua::Error::runtime("the luv engine is not running"))?;
+        let worker = function.spawn(lua, label, Launch::Bound)?;
+        let mut this = signal.borrow_mut::<Signal>()?;
+        this.parallel.push((id, Worker { id: worker, engine }));
+        this.refresh();
+        Ok(ThreadHandle::new(worker))
     }
 
     pub fn handler(&self, id: &str) -> Option<Function> {
@@ -95,16 +152,48 @@ impl Signal {
     }
 
     pub fn fire(lua: &Lua, signal: &AnyUserData, args: MultiValue) -> Result<()> {
+        Self::fire_with(lua, signal, args, |scheduler, lua, handler, args| {
+            scheduler.spawn(lua, handler, args);
+        })
+    }
+
+    pub fn fire_with(
+        lua: &Lua,
+        signal: &AnyUserData,
+        args: MultiValue,
+        spawn: impl Fn(&Scheduler, &Lua, Function, MultiValue),
+    ) -> Result<()> {
         let scheduler = Scheduler::get(lua)?;
-        let (ids, waiters) = {
+        let (ids, waiters, workers, name) = {
             let mut this = signal.borrow_mut::<Signal>()?;
             this.base.ensure_alive()?;
-            (this.handler_ids(), mem::take(&mut this.waiters))
+            let workers: Vec<(String, u64, Arc<Engine>)> = this
+                .parallel
+                .iter()
+                .map(|(id, worker)| (id.clone(), worker.id, worker.engine.clone()))
+                .collect();
+            (this.handler_ids(), mem::take(&mut this.waiters), workers, this.base.name().to_owned())
         };
+        if !workers.is_empty() {
+            match encode(lua, args.clone()) {
+                Ok(payload) => {
+                    for (_, worker, engine) in &workers {
+                        engine.bus().send_to(*worker, Message::Call(payload.clone()));
+                    }
+                }
+                Err(error) => {
+                    let ids: Vec<&str> = workers.iter().map(|(id, _, _)| id.as_str()).collect();
+                    scheduler.report(mlua::Error::runtime(format!(
+                        "{name} could not send its values to the parallel handler {}: {error}",
+                        ids.join(", ")
+                    )));
+                }
+            }
+        }
         for id in ids {
             let handler = signal.borrow::<Signal>()?.handler(&id);
             if let Some(handler) = handler {
-                scheduler.spawn(lua, handler, args.clone());
+                spawn(&scheduler, lua, handler, args.clone());
             }
         }
         for waiter in waiters {
@@ -118,6 +207,12 @@ impl Signal {
         let handler = {
             let this = signal.borrow::<Signal>()?;
             this.base.ensure_alive()?;
+            if this.parallel.iter().any(|(bound, _)| bound == id) {
+                return Err(mlua::Error::runtime(format!(
+                    "handler '{id}' on {} runs on its own thread, so it cannot be invoked",
+                    this.base.name()
+                )));
+            }
             this.handler(id).ok_or_else(|| {
                 mlua::Error::runtime(format!("no handler is bound to '{id}' on {}", this.base.name()))
             })?
@@ -164,6 +259,7 @@ impl GameObject for Signal {
 
     fn on_destroy(&mut self) {
         self.handlers.clear();
+        self.parallel.clear();
         let message = format!("{} was destroyed while it was being waited on", self.base.name());
         for waiter in self.waiters.drain(..) {
             waiter.wake(Err(mlua::Error::runtime(message.clone())));
@@ -183,7 +279,11 @@ impl UserData for Signal {
         methods.add_method_mut("BindHandler", |_, this, (id, handler): (String, Function)| {
             this.bind_handler(id, handler)
         });
-        methods.add_method_mut("UnBind", |_, this, id: String| Ok(this.unbind(&id).is_some()));
+        methods.add_method_mut("UnBind", |_, this, id: String| Ok(this.unbind_any(&id)));
+        methods.add_function(
+            "BindParallel",
+            |lua, (signal, id, target): (AnyUserData, String, Value)| Signal::bind_parallel(lua, &signal, id, target),
+        );
         methods.add_method("IsBound", |_, this, id: String| Ok(this.is_bound(&id)));
         methods.add_function("Fire", |lua, (signal, args): (AnyUserData, MultiValue)| {
             Signal::fire(lua, &signal, args)

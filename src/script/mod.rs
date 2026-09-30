@@ -1,6 +1,9 @@
+mod headers;
 mod parallel;
 
-pub use parallel::{Cluster, ENTER, EXIT, HOOK, ParallelError, Units, split};
+pub use headers::{Compiled, Headers, capture_line, headers};
+
+pub use parallel::{Cluster, ClusterKind, ENTER, EXIT, FUNCTION_HOOK, HOOK, ParallelError, Units, split};
 
 use std::fmt;
 

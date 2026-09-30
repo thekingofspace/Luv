@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use mlua::{AnyUserData, Lua, Result, UserData, UserDataFields, UserDataMethods, UserDataRef, Value};
+use mlua::{AnyUserData, Function, Lua, Result, Table, UserData, UserDataFields, UserDataMethods, UserDataRef, Value};
 
 use super::{BaseGameObject, GameObject};
 use crate::project::is_script;
@@ -292,14 +292,15 @@ impl UserData for External {
     }
 }
 
-const RESERVED: [&str; 11] = [
-    "ecall", "import", "require", "enum", "udim", "color", "promise", "switch", "task", "SetGlobal", "_G",
+const RESERVED: [&str; 14] = [
+    "ecall", "import", "require", "enum", "udim", "color", "promise", "switch", "task", "global", "epcall",
+    "SetGlobal", "_G", "print",
 ];
 
-fn set_global(lua: &Lua, name: &str, value: Value) -> Result<()> {
+fn valid_name(caller: &str, name: &str) -> Result<String> {
     let clean = name.trim();
     if clean.is_empty() {
-        return Err(runtime("SetGlobal needs a name"));
+        return Err(runtime(format!("{caller} needs a name")));
     }
     let mut letters = clean.chars();
     let valid = letters
@@ -311,15 +312,137 @@ fn set_global(lua: &Lua, name: &str, value: Value) -> Result<()> {
             "'{clean}' is not a valid global name, use letters, digits and underscores"
         )));
     }
-    if RESERVED.contains(&clean) {
+    Ok(clean.to_owned())
+}
+
+fn set_global(lua: &Lua, caller: &str, name: &str, value: Value) -> Result<()> {
+    let clean = valid_name(caller, name)?;
+    if RESERVED.contains(&clean.as_str()) {
         return Err(runtime(format!("'{clean}' belongs to luv and cannot be replaced")));
     }
     lua.globals().set(clean, value)
 }
 
+#[derive(Default)]
+pub struct ScriptApis {
+    apis: RefCell<HashMap<String, Table>>,
+    wrap: RefCell<Option<Function>>,
+}
+
+impl ScriptApis {
+    pub fn names(lua: &Lua) -> Vec<String> {
+        let mut names: Vec<String> = lua
+            .app_data_ref::<Rc<ScriptApis>>()
+            .map(|apis| apis.apis.borrow().keys().cloned().collect())
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    pub fn proxy(lua: &Lua, window: &AnyUserData, name: &str) -> Result<Option<Table>> {
+        let Some(apis) = lua.app_data_ref::<Rc<ScriptApis>>().map(|apis| apis.clone()) else {
+            return Ok(None);
+        };
+        let Some(api) = apis.apis.borrow().get(name).cloned() else {
+            return Ok(None);
+        };
+        let wrap = apis.wrap.borrow().clone();
+        let wrap = match wrap {
+            Some(wrap) => wrap,
+            None => {
+                let globals = lua.globals();
+                let made: Function = lua
+                    .load(
+                        r#"
+                        local setmetatable, type, error = ...
+                        return function(window, api, name)
+                            local proxy = {}
+                            local wrapped = setmetatable({}, { __mode = "k" })
+                            return setmetatable(proxy, {
+                                __index = function(_, key)
+                                    local value = api[key]
+                                    if type(value) ~= "function" then
+                                        return value
+                                    end
+                                    local made = wrapped[value]
+                                    if made == nil then
+                                        made = function(first, ...)
+                                            if first == proxy then
+                                                return value(window, ...)
+                                            end
+                                            return value(window, first, ...)
+                                        end
+                                        wrapped[value] = made
+                                    end
+                                    return made
+                                end,
+                                __newindex = function()
+                                    error("the " .. name .. " API cannot be changed through GetAPI", 2)
+                                end,
+                                __metatable = false,
+                            })
+                        end
+                        "#,
+                    )
+                    .set_name("=luv.global")
+                    .call((
+                        globals.get::<Function>("setmetatable")?,
+                        globals.get::<Function>("type")?,
+                        globals.get::<Function>("error")?,
+                    ))?;
+                *apis.wrap.borrow_mut() = Some(made.clone());
+                made
+            }
+        };
+        wrap.call((window.clone(), api, name)).map(Some)
+    }
+}
+
+fn apis(lua: &Lua) -> Rc<ScriptApis> {
+    if let Some(apis) = lua.app_data_ref::<Rc<ScriptApis>>() {
+        return apis.clone();
+    }
+    let apis = Rc::new(ScriptApis::default());
+    lua.set_app_data(apis.clone());
+    apis
+}
+
+fn global_library(lua: &Lua) -> Result<Table> {
+    let library = lua.create_table()?;
+    library.set(
+        "new",
+        lua.create_function(|lua, (name, value): (String, Value)| set_global(lua, "global.new", &name, value))?,
+    )?;
+    library.set(
+        "newImport",
+        lua.create_function(|lua, (name, value): (String, Value)| {
+            let clean = valid_name("global.newImport", &name)?;
+            if value.is_nil() {
+                return Err(runtime("global.newImport needs a value to import"));
+            }
+            crate::runtime::imports::provide(lua, &clean, value)
+        })?,
+    )?;
+    library.set(
+        "newAPI",
+        lua.create_function(|lua, (name, api): (String, Table)| {
+            let clean = valid_name("global.newAPI", &name)?;
+            if crate::objects::window::WINDOW_APIS.contains(&clean.as_str()) {
+                return Err(runtime(format!("'{clean}' is already a window API of luv")));
+            }
+            apis(lua).apis.borrow_mut().insert(clean, api);
+            Ok(())
+        })?,
+    )?;
+    library.set_readonly(true);
+    Ok(library)
+}
+
 pub fn install(lua: &Lua) -> Result<()> {
     let call = lua.create_async_function(|lua, path: String| External::call(lua, path))?;
     lua.globals().set("ecall", call)?;
-    let setter = lua.create_function(|lua, (name, value): (String, Value)| set_global(lua, &name, value))?;
-    lua.globals().set("SetGlobal", setter)
+    let setter =
+        lua.create_function(|lua, (name, value): (String, Value)| set_global(lua, "SetGlobal", &name, value))?;
+    lua.globals().set("SetGlobal", setter)?;
+    lua.globals().set("global", global_library(lua)?)
 }

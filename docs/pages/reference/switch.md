@@ -156,10 +156,10 @@ local api = switch.new({
 	error(`mods cannot call {name}`)
 end)
 
-SetGlobal("modApi", api)
+global.new("modApi", api)
 ```
 
-See [SetGlobal](globals.md#setglobal) and [ExternalModule](externalmodule.md).
+See [global.new](global.md#new) and [ExternalModule](externalmodule.md).
 
 ## Errors
 

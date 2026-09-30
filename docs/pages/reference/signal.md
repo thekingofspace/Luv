@@ -56,13 +56,38 @@ Adds a handler under the id `id`. Handlers run in the order you bind them. The s
 
 Each id can only be bound once. Binding it again raises `handler '<id>' is already bound to <Name>, call UnBind("<id>") before binding it again`.
 
+### BindParallel
+
+```luau
+signal:BindParallel(id: string, handler: (T...) -> ...any): Thread
+```
+
+Adds a handler that runs on a thread of its own. luv starts one thread for it and keeps it. Every fire sends its values to that thread, and the handler runs there. Returns the [Thread](thread.md#thread-object).
+
+```luau
+local Messenger = import("Messenger")
+local Signal = import("Signal")
+
+local hit = Signal.new()
+
+hit:BindParallel("damage", function(target: string, amount: number)
+	Messenger:Fire("Damaged", target, amount * 2)
+end)
+
+hit:Fire("goblin", 5)
+```
+
+The handler must be written inside the call, and the values of each fire must be ones that can travel between threads. It can use imports and required modules from the top of the script. See [BindParallel](../manual/parallel.md#bindparallel).
+
+The id shares the ids of [BindHandler](#bindhandler), so it cannot be bound twice. [UnBind](#unbind) ends the thread, and so does [Destroy](#destroy). A parallel handler cannot be used with [Invoke](#invoke).
+
 ### UnBind
 
 ```luau
 signal:UnBind(id: string): boolean
 ```
 
-Removes the handler with this id. Returns `true` when a handler was removed and `false` when the id was not bound.
+Removes the handler with this id. Returns `true` when a handler was removed and `false` when the id was not bound. Unbinding a [parallel handler](#bindparallel) also ends its thread.
 
 ### IsBound
 

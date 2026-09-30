@@ -144,6 +144,7 @@ pub struct Window {
     inputs: Rc<Inputs>,
     sounds: Rc<Sounds>,
     apis: RefCell<HashMap<&'static str, Table>>,
+    script_apis: RefCell<HashMap<String, Table>>,
 }
 
 pub const WINDOW_APIS: [&str; 6] = ["Renderable", "Input", "Mouse", "Controller", "Touch", "Sound"];
@@ -267,6 +268,7 @@ impl Window {
             inputs: Inputs::new(system.clone(), id),
             sounds: Sounds::new(system.clone()),
             apis: RefCell::new(HashMap::new()),
+            script_apis: RefCell::new(HashMap::new()),
         };
         let userdata = lua.create_userdata(window)?;
         host.open.borrow_mut().insert(id, userdata.clone());
@@ -389,6 +391,37 @@ impl Window {
             (this.scene.clone(), this.state.frame(0.0))
         };
         scene.capture(frame).await.map_err(mlua::Error::runtime)
+    }
+
+    fn get_api(lua: &Lua, window: &AnyUserData, name: &str) -> Result<Value> {
+        let known = WINDOW_APIS.contains(&name);
+        if !known {
+            let this = window.borrow::<Window>()?;
+            if !this.state.open.get() {
+                return Err(mlua::Error::runtime(format!(
+                    "the {name} API is not available because the window is closed"
+                )));
+            }
+            if let Some(api) = this.script_apis.borrow().get(name) {
+                return Ok(Value::Table(api.clone()));
+            }
+            drop(this);
+            if let Some(api) = crate::objects::external::ScriptApis::proxy(lua, window, name)? {
+                window
+                    .borrow::<Window>()?
+                    .script_apis
+                    .borrow_mut()
+                    .insert(name.to_owned(), api.clone());
+                return Ok(Value::Table(api));
+            }
+            let mut available: Vec<String> = WINDOW_APIS.iter().map(|api| (*api).to_owned()).collect();
+            available.extend(crate::objects::external::ScriptApis::names(lua));
+            return Err(mlua::Error::runtime(format!(
+                "'{name}' is not a window API, the available APIs are {}",
+                available.join(", ")
+            )));
+        }
+        window.borrow::<Window>()?.api(lua, name)
     }
 
     fn api(&self, lua: &Lua, name: &str) -> Result<Value> {
@@ -735,7 +768,9 @@ impl UserData for Window {
 
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         Self::add_base_methods(methods);
-        methods.add_method("GetAPI", |lua, this, name: String| this.api(lua, &name));
+        methods.add_function("GetAPI", |lua, (window, name): (AnyUserData, String)| {
+            Window::get_api(lua, &window, &name)
+        });
         methods.add_method("AddPostProcess", |lua, this, shader: Option<AnyUserData>| {
             if !this.state.open.get() {
                 return Err(mlua::Error::runtime("post processes cannot be added because the window is closed"));

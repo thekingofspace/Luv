@@ -127,7 +127,12 @@ def check_prose(page, number, line, problems):
             problems.append((page, number, f"uses a hyphenated word: {word}"))
 
 
+DIRECTIVE = re.compile(r"^\s*(---@\w+|--!\w+)")
+
+
 def check_code(page, number, line, language, problems):
+    if language in ("luau", "lua") and DIRECTIVE.match(line):
+        return
     rule = COMMENTS.get(language)
     if rule and rule.search(STRING.sub('""', line)):
         problems.append((page, number, f"has a comment in {language} code: {line.strip()}"))

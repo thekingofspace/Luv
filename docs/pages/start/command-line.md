@@ -54,7 +54,26 @@ print(Process.args[1], Process.args[2])
 luv build [path]
 ```
 
-Packs the game into `build/<name>.luvit`. Scripts turn into bytecode, so no source code ships. It also builds native plugins and containers.
+Packs the game into `build/<name>.luvit`. Scripts turn into bytecode, so no source code ships. It also builds native plugins and containers, and copies the [export](../manual/shipping.md#files-next-to-the-game) folder.
+
+While it packs, a bar at the bottom of the terminal shows how far it is:
+
+```text
+[=====================         ]  70% assets 28/40
+```
+
+Scripts are packed first, then assets, then each container the same way. A line is printed as each stage is done, and the bar goes away at the end:
+
+```text
+Scripts complete (12)
+Assets complete (28)
+Package written
+Container Expansion Scripts complete (3)
+Container Expansion Assets complete (9)
+Container Expansion Package written
+```
+
+A script with a [---@capture](../manual/scripts.md#capturing-compile-times) header prints a line of its own when it is compiled. The bar is left out when the output does not go to a terminal, like in a log file.
 
 ## luv run
 

@@ -4,7 +4,7 @@ Every type in `types.d.luau` is listed here, with what it inherits and where it 
 
 The Inherits column links to the parent type. A type gets every member of its parent.
 
-luv writes `types.d.luau` from the types of the engine plus every plugin type file in your project and its containers. A plugin adds its own types at the end of the file, and its own names to `Imports` and `WindowAPIs`. Those are not listed here. See [Type files](../manual/native-plugins.md#type-files).
+luv writes `types.d.luau` from the types of the engine plus every other `.d.luau` file in your project and its containers. Such a file adds its own types at the end of the file, and its own names to `Imports` and `WindowAPIs`. Those are not listed here. See [Type files](../manual/native-plugins.md#type-files).
 
 ## Basics
 
@@ -32,6 +32,14 @@ luv writes `types.d.luau` from the types of the engine plus every plugin type fi
 | `TaskFields` | none | The properties and methods of a Task. See [Task](task.md#task-object). |
 | `Task_API` | none | The `task` global. See [task](task.md). |
 | `Switch_API` | none | The `switch` global. See [switch](switch.md). |
+| `Global_API` | none | The `global` global. See [global](global.md). |
+| [Exception](exception.md#exception-object) | none | One error, from [Exception.Raised](exception.md#raised). |
+| [StackFrame](exception.md#stackframe) | none | One call on the stack of an error. |
+| `Exception_API` | none | The `Exception` library. See [Exception](exception.md). |
+| [Thread](thread.md#thread-object) | none | A thread of the game, from [Thread.Running](thread.md#running) or [Thread.Get](thread.md#get). |
+| `Thread_API` | none | The `Thread` library. See [Thread](thread.md). |
+| [Registry](registry.md#registry-object) | none | Named values under string ids. |
+| `Registry_API` | none | The `Registry` library. See [Registry](registry.md). |
 
 ## Enum types
 

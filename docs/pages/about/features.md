@@ -17,7 +17,12 @@ This page lists what luv can do today.
 - [task](../reference/task.md) starts coroutines and waits for time, with `task.create` for one you start again and again.
 - [promise](../reference/promise.md) holds work that is not done yet, with `AndThen`, `Catch`, `Await`, `all` and `race`.
 - [switch](../reference/switch.md) picks a function by name and runs it on a coroutine, looked up in Rust.
-- Code between `EnterParallel()` and `ExitParallel()` runs on its own thread. See [Parallel code](../manual/parallel.md).
+- Code between `task.desynchronize()` and `task.synchronize()` runs on its own thread. So does a function given to `task.parallel` or `BindParallel`. See [Parallel code](../manual/parallel.md).
+- [Thread](../reference/thread.md) finds threads, marks them ready and gives each one a state.
+- [Exception](../reference/exception.md) sees every error, caught or not, from any thread, with its full stack. `epcall` catches an error and still reports it.
+- [Registry](../reference/registry.md) keeps named values for items and mods, with a safe kind that every thread shares.
+- [global](../reference/global.md) adds your own globals, imports and window APIs.
+- Script headers like `---@start`, `---@boot` and `---@capture` start scripts on their own and time how long they take to compile. See [Scripts and modules](../manual/scripts.md#boot-scripts).
 - [Signals](../reference/signal.md) for events and a [Messenger](../reference/messenger.md) that sends messages between threads.
 - [Bulk](../reference/bulk.md) updates change many objects in one call.
 
@@ -119,7 +124,8 @@ See [Random](../reference/random.md).
 - Call functions in any DLL or shared library.
 - Structs, arrays, pointers and callbacks.
 - Plugins in C, C++ or Rust that add classes and functions to Luau.
-- The `native` folder is built for you.
+- The `native` folder is built for you. Plugins in `nativeInter` are built into the game program itself.
+- Hooks run native code on every heartbeat, every frame, on close and on every error.
 
 See [Native plugins](../manual/native-plugins.md).
 
@@ -128,5 +134,7 @@ See [Native plugins](../manual/native-plugins.md).
 - `luv package` makes one program with your scripts and assets inside.
 - Scripts ship as bytecode, not source.
 - [Containers](../manual/containers.md) for DLC and mods.
+- An `export` folder for files that sit next to the game, like a readme.
+- A progress bar while the game is packed.
 
 See [Shipping your game](../manual/shipping.md).

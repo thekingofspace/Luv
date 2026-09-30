@@ -8,6 +8,7 @@ use mlua::{
 };
 
 use super::joined;
+use crate::api::exception::error_text;
 use crate::runtime::{Scheduler, Waiter};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -71,17 +72,8 @@ fn outcome(state: &Shared) -> Option<(Status, MultiValue)> {
     }
 }
 
-fn message(error: &mlua::Error) -> String {
-    match error {
-        mlua::Error::RuntimeError(text) => text.clone(),
-        mlua::Error::CallbackError { cause, .. } => message(cause),
-        mlua::Error::WithContext { context, cause } => format!("{context}: {}", message(cause)),
-        other => other.to_string(),
-    }
-}
-
 fn failure(lua: &Lua, error: &mlua::Error) -> Result<MultiValue> {
-    let text = lua.create_string(message(error))?;
+    let text = lua.create_string(error_text(error))?;
     Ok(MultiValue::from_vec(vec![Value::String(text)]))
 }
 
